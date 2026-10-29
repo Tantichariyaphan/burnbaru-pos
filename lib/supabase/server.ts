@@ -14,11 +14,7 @@ export async function createSupabaseServerClient() {
         return cookieStore.getAll();
       },
       setAll(values) {
-        try {
-          values.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
-        } catch {
-          // Server Components cannot update cookies; middleware or route handlers do.
-        }
+        values.forEach(({ name, value, options }) => cookieStore.set(name, value, options));
       },
     },
   });

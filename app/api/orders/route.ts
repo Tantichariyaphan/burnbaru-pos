@@ -1,4 +1,4 @@
-import { errorMessage, getPosContext, isEmployee, jsonError, validSatang, validUuid } from "@/lib/pos-server";
+import { apiFailure, errorMessage, getPosContext, isEmployee, jsonError, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +49,7 @@ export async function GET(request: Request) {
       employee: { name: employeeNames.get(String(order.created_by)) ?? "—" },
     })) });
   } catch (error) {
-    return jsonError(error, 500);
+    return apiFailure(error, "api/orders GET");
   }
 }
 
@@ -106,7 +106,6 @@ export async function POST(request: Request) {
     }
     return Response.json({ error: "คำขอไม่ถูกต้อง" }, { status: 400 });
   } catch (error) {
-    const message = errorMessage(error);
-    return jsonError(error, message.includes("permission") || message.includes("authorized") ? 403 : 400);
+    return apiFailure(error, "api/orders POST");
   }
 }

@@ -1,4 +1,4 @@
-import { errorMessage, getPosContext, isEmployee, jsonError, validSatang, validUuid } from "@/lib/pos-server";
+import { apiFailure, getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export async function GET() {
       employees: employeesResult.data ?? [],
     });
   } catch (error) {
-    return jsonError(error, 500);
+    return apiFailure(error, "api/pos GET");
   }
 }
 
@@ -148,8 +148,6 @@ export async function POST(request: Request) {
 
     return Response.json({ error: "ไม่รู้จักคำสั่งนี้" }, { status: 400 });
   } catch (error) {
-    const message = errorMessage(error);
-    const status = message.includes("JWT") || message.includes("auth") ? 401 : 400;
-    return jsonError(error, status);
+    return apiFailure(error, "api/pos POST");
   }
 }

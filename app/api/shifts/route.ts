@@ -1,4 +1,4 @@
-import { getPosContext, isEmployee, jsonError } from "@/lib/pos-server";
+import { apiFailure, getPosContext, isEmployee } from "@/lib/pos-server";
 import { calculateExpectedCash } from "@/lib/financial";
 
 export const dynamic = "force-dynamic";
@@ -73,6 +73,6 @@ export async function GET() {
       closings: closingsWithNames,
     });
   } catch (error) {
-    return jsonError(error, 500);
+    return apiFailure(error, "api/shifts GET");
   }
 }
