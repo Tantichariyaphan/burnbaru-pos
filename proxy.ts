@@ -20,7 +20,12 @@ export async function proxy(request: NextRequest) {
     },
   });
 
-  await supabase.auth.getUser();
+  try {
+    await supabase.auth.getUser();
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "UnknownError";
+    console.error("[proxy] Unable to refresh Supabase auth cookies", { name });
+  }
   return response;
 }
 

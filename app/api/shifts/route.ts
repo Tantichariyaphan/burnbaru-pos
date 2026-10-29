@@ -1,4 +1,5 @@
-import { apiFailure, getPosContext, isEmployee } from "@/lib/pos-server";
+import { apiFailure } from "@/lib/api-errors";
+import { getPosContext, isEmployee } from "@/lib/pos-server";
 import { calculateExpectedCash } from "@/lib/financial";
 
 export const dynamic = "force-dynamic";
