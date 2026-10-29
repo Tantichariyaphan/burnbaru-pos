@@ -6,7 +6,7 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { PosData, PosOrder, PosProduct, PosReceipt } from "@/lib/pos-types";
 
 type Tab = "sale" | "history" | "reports";
-type Modal = "openShift" | "closeShift" | "checkout" | "movement" | "cancel" | "refund" | null;
+type Modal = "openShift" | "addProduct" | "closeShift" | "checkout" | "movement" | "cancel" | "refund" | null;
 type CartLine = { product: PosProduct; quantity: number };
 type ShiftPreview = {
   opening_cash_satang: number;
@@ -158,6 +158,11 @@ export default function POS() {
   const [checkoutTotal, setCheckoutTotal] = useState(0);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const [openingCash, setOpeningCash] = useState("");
+  const [productName, setProductName] = useState("");
+  const [productEmoji, setProductEmoji] = useState("");
+  const [productCategoryId, setProductCategoryId] = useState("");
+  const [productPrice, setProductPrice] = useState("");
+  const [productAvailable, setProductAvailable] = useState(true);
   const [countedCash, setCountedCash] = useState("");
   const [closingNotes, setClosingNotes] = useState("");
   const [movementType, setMovementType] = useState<"in" | "out">("out");
@@ -195,7 +200,6 @@ export default function POS() {
       setShiftClosings(shiftData.closings);
       setAuthRequired(false);
       setBlockedMessage("");
-      setModal((current) => !pos.activeShift && current === null ? "openShift" : current);
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "โหลดข้อมูลไม่สำเร็จ";
       if (message.includes("กรุณาเข้าสู่ระบบ")) setAuthRequired(true);
@@ -366,21 +370,48 @@ export default function POS() {
     }
   }
 
-  async function postPosAction(body: Record<string, unknown>) {
-    await api("/api/pos", { method: "POST", body: JSON.stringify(body) });
+  async function postPosAction<T = unknown>(body: Record<string, unknown>): Promise<T> {
+    const result = await api<T>("/api/pos", { method: "POST", body: JSON.stringify(body) });
     await loadData();
+    return result;
   }
 
   async function submitOpenShift(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     try {
-      await postPosAction({ action: "openShift", openingCashSatang: toSatang(openingCash) });
+      const result = await postPosAction<{ shift: { already_open?: boolean } }>({
+        action: "openShift",
+        openingCashSatang: toSatang(openingCash),
+      });
       setOpeningCash("");
       setModal(null);
-      notify("เปิดกะแล้ว");
+      notify(result.shift.already_open ? "มีกะเปิดอยู่แล้ว ไม่ได้บันทึกเงินเปิดกะซ้ำ" : "เปิดกะและบันทึกเงินเริ่มต้นแล้ว");
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : "เปิดกะไม่สำเร็จ");
+    } finally { setBusy(false); }
+  }
+
+  async function submitAddProduct(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await postPosAction({
+        action: "addProduct",
+        categoryId: productCategoryId || data?.categories[0]?.id,
+        name: productName,
+        emoji: productEmoji,
+        priceSatang: toSatang(productPrice),
+        available: productAvailable,
+      });
+      setProductName("");
+      setProductEmoji("");
+      setProductPrice("");
+      setProductAvailable(true);
+      setModal(null);
+      notify("เพิ่มสินค้าและบันทึกลงฐานข้อมูลแล้ว");
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "เพิ่มสินค้าไม่สำเร็จ");
     } finally { setBusy(false); }
   }
 
@@ -526,7 +557,7 @@ export default function POS() {
       {tab === "sale" && (
         <section className="grid min-h-0 gap-3 lg:h-[calc(100vh-108px)] lg:grid-cols-[1.13fr_1fr_.95fr]">
           <section className="flex min-h-[420px] flex-col rounded-2xl border border-[#dce2d9] bg-white p-4 shadow-sm lg:min-h-0">
-            <div className="mb-3 flex items-end justify-between"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-[#5b826c]">Menu</p><h2 className="text-xl font-extrabold">เลือกเมนู</h2></div><span className="text-xs text-stone-400">{visibleProducts.length} รายการ</span></div>
+            <div className="mb-3 flex items-end justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-[#5b826c]">Menu</p><h2 className="text-xl font-extrabold">เลือกเมนู</h2></div><div className="flex items-center gap-2"><span className="text-xs text-stone-400">{visibleProducts.length} รายการ</span>{isManager && <button type="button" onClick={() => { setProductCategoryId(data.categories[0]?.id ?? ""); setModal("addProduct"); }} className="rounded-lg bg-[#245b44] px-3 py-2 text-xs font-bold text-white">+ เพิ่มสินค้า</button>}</div></div>
             <label className="mb-3 flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2.5 text-stone-400"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full bg-transparent text-sm text-stone-800 outline-none" placeholder="ค้นหาสินค้า..." /></label>
             <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
               <button onClick={() => setActiveCategory("all")} className={`shrink-0 rounded-xl px-3 py-2 text-sm font-bold ${activeCategory === "all" ? "bg-[#245b44] text-white" : "bg-stone-100 text-stone-600"}`}>ทั้งหมด</button>
@@ -615,7 +646,9 @@ export default function POS() {
         </section>
       )}
 
-      {modal === "openShift" && <Dialog title="เปิดกะขาย" onClose={() => setModal(null)}><form onSubmit={(event) => void submitOpenShift(event)}><p className="mb-4 text-sm text-stone-600">ระบุเงินสดเริ่มต้นในลิ้นชัก ระบบจะบันทึกพนักงานและเวลาเปิดกะ</p><label className="block text-sm font-semibold">เงินสดเริ่มต้น (บาท)<input required min="0" step="0.01" type="number" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังเปิดกะ..." : "ยืนยันเปิดกะ"}</button></form></Dialog>}
+      {modal === "openShift" && <Dialog title="เปิดกะขาย" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitOpenShift(event)}><p className="mb-4 text-sm text-stone-600">ระบุเงินสดเริ่มต้นในลิ้นชัก ระบบจะบันทึกเพียงครั้งเดียวต่อกะ</p><label className="block text-sm font-semibold">เงินสดเริ่มต้น (บาท)<input required min="0" step="0.01" type="number" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังเปิดกะ..." : "ยืนยันเปิดกะ"}</button></form></Dialog>}
+
+      {modal === "addProduct" && <Dialog title="เพิ่มสินค้าในเมนู" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitAddProduct(event)}><label className="mb-3 block text-sm font-semibold">ชื่อสินค้า<input required maxLength={120} value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="เช่น Basque Cheesecake" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><div className="mb-3 grid grid-cols-[96px_1fr] gap-3"><label className="text-sm font-semibold">อีโมจิ<input maxLength={16} value={productEmoji} onChange={(event) => setProductEmoji(event.target.value)} placeholder="🍰" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="text-sm font-semibold">หมวดหมู่<select required value={productCategoryId} onChange={(event) => setProductCategoryId(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3"><option value="">เลือกหมวดหมู่</option>{data.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div><label className="mb-3 block text-sm font-semibold">ราคา (บาท)<input required min="0.01" step="0.01" type="number" value={productPrice} onChange={(event) => setProductPrice(event.target.value)} placeholder="0.00" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={productAvailable} onChange={(event) => setProductAvailable(event.target.checked)} className="h-4 w-4 accent-[#245b44]" />พร้อมขายทันที</label><button disabled={busy || !data.categories.length} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึกสินค้า..." : data.categories.length ? "เพิ่มสินค้า" : "ยังไม่มีหมวดหมู่สินค้า"}</button></form></Dialog>}
 
       {modal === "closeShift" && <Dialog title="ปิดกะและกระทบยอด" onClose={() => setModal(null)}><form onSubmit={(event) => void submitCloseShift(event)}><div className="mb-4 grid grid-cols-2 gap-2 text-sm">{[
         ["เงินสดเปิดกะ", shiftPreview?.opening_cash_satang], ["ขายเงินสด", shiftPreview?.cash_sales_satang],

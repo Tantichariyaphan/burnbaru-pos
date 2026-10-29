@@ -76,6 +76,32 @@ export async function POST(request: Request) {
       return Response.json({ shift: data });
     }
 
+    if (input.action === "addProduct") {
+      if (employee.role !== "owner" && employee.role !== "manager") {
+        return Response.json({ error: "เฉพาะเจ้าของหรือผู้จัดการเท่านั้นที่เพิ่มสินค้าได้" }, { status: 403 });
+      }
+      if (!validUuid(input.categoryId) || typeof input.name !== "string" ||
+        !input.name.trim() || input.name.trim().length > 120 ||
+        !validSatang(input.priceSatang) || input.priceSatang > 2_147_483_647 ||
+        (input.emoji !== undefined && input.emoji !== null &&
+          (typeof input.emoji !== "string" || input.emoji.length > 16)) ||
+        (input.available !== undefined && typeof input.available !== "boolean")) {
+        return Response.json({ error: "กรุณากรอกชื่อ หมวดหมู่ และราคาสินค้าให้ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("add_pos_product", {
+        p_category_id: input.categoryId,
+        p_name: input.name.trim(),
+        p_emoji: typeof input.emoji === "string" ? input.emoji.trim() || null : null,
+        p_price_satang: input.priceSatang,
+        p_available: input.available ?? true,
+      });
+      if (error) {
+        logRpcFailure("api/pos POST", "add_pos_product", error);
+        throw error;
+      }
+      return Response.json({ product: data });
+    }
+
     if (input.action === "saveOrder") {
       if (!validItems(input.items) || !validSatang(input.discountSatang ?? 0, true)) {
         return Response.json({ error: "รายการสินค้าไม่ถูกต้อง" }, { status: 400 });

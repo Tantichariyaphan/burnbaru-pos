@@ -29,7 +29,9 @@ Open http://localhost:3000.
 
 ### Apply the production POS database migrations
 
-The POS API requires every migration under `supabase/migrations/` to be applied to the same Supabase project configured in Vercel. Migration `0004_repair_employee_rpc_functions.sql` restores the `public.current_employee_profile()` and `public.employee_directory()` RPCs, grants execution only to `authenticated`, and asks PostgREST to reload its schema cache. It is intentionally a new migration: if an earlier migration was marked applied but its functions were later removed, applying only the pending migration still repairs them. Vercel deployment does not apply Supabase migrations automatically.
+The POS API requires every migration under `supabase/migrations/` to be applied to the same Supabase project configured in Vercel. Migration `0004_repair_employee_rpc_functions.sql` restores the employee RPCs. Migration `0005_idempotent_shifts_and_product_catalog.sql` makes opening a register shift idempotent and adds a manager-only product creation RPC. Vercel deployment does not apply Supabase migrations automatically.
+
+The POS asks the employee to open a shift explicitly; background data refreshes no longer reopen the opening-cash dialog. Repeated open-shift requests for a register return its existing shift and do not create another opening cash record. Owners and managers can add products from the menu screen; the new products are stored in Supabase and are used by the existing order and reporting flows.
 
 From the repository root, link the Supabase CLI to the production project and apply all pending migrations in order:
 
