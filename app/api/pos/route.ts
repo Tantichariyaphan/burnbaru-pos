@@ -1,5 +1,5 @@
 import { apiFailure } from "@/lib/api-errors";
-import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
+import { getPosContext, isEmployee, logRpcFailure, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
 
@@ -20,7 +20,10 @@ export async function GET() {
     const failure = [categoriesResult.error, productsResult.error, shiftResult.error, queueResult.error].find(Boolean);
     if (failure) throw failure;
     const employeesResult = await supabase.rpc("employee_directory");
-    if (employeesResult.error) throw employeesResult.error;
+    if (employeesResult.error) {
+      logRpcFailure("employee_directory", employeesResult.error);
+      throw employeesResult.error;
+    }
     const categories = (categoriesResult.data ?? []).map((category) => ({
       ...category,
       products: (productsResult.data ?? []).filter((product) => product.category_id === category.id),

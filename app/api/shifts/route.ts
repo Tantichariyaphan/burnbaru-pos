@@ -1,5 +1,5 @@
 import { apiFailure } from "@/lib/api-errors";
-import { getPosContext, isEmployee } from "@/lib/pos-server";
+import { getPosContext, isEmployee, logRpcFailure } from "@/lib/pos-server";
 import { calculateExpectedCash } from "@/lib/financial";
 
 export const dynamic = "force-dynamic";
@@ -23,7 +23,10 @@ export async function GET() {
     if (shiftError) throw shiftError;
     if (closingError) throw closingError;
     const { data: directory, error: directoryError } = await supabase.rpc("employee_directory");
-    if (directoryError) throw directoryError;
+    if (directoryError) {
+      logRpcFailure("employee_directory", directoryError);
+      throw directoryError;
+    }
     const employeeNames = new Map<string, string>((directory ?? []).map((person: { id: string; name: string }) => [person.id, person.name]));
     const closingsWithNames = (closings ?? []).map((closing) => ({
       ...closing,

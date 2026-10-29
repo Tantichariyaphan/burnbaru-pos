@@ -22,8 +22,15 @@ export async function getPosContext() {
   if (!userData.user) return unauthenticated;
 
   const { data: profiles, error } = await supabase.rpc("current_employee_profile");
-  if (error) throw error;
+  if (error) {
+    logRpcFailure("current_employee_profile", error);
+    throw error;
+  }
   return { supabase, user: userData.user, employee: profiles?.[0] ?? null };
+}
+
+export function logRpcFailure(name: string, error: { code?: string; message?: string }) {
+  console.error(`[Supabase RPC ${name}] failed`, { code: error.code, message: error.message });
 }
 
 export function isEmployee(
