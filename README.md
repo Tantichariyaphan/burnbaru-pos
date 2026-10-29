@@ -1,4 +1,6 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# BurnBau POS
+
+Point-of-sale application for BurnBau, built with Next.js.
 
 ## Getting Started
 

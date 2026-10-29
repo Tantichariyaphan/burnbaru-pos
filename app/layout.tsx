@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Grandfa Farm POS",
-  description: "Point of sale for Grandfa Farm Cafe & Resort",
+  title: "BurnBau POS",
+  description: "Point of sale for BurnBau",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
