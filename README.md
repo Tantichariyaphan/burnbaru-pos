@@ -29,19 +29,29 @@ Open http://localhost:3000.
 
 ### Apply the production POS database migrations
 
-The POS API requires every migration under `supabase/migrations/` to be applied to the same Supabase project configured in Vercel. In particular, migration `0003_restore_employee_rpc_functions.sql` defines the `public.current_employee_profile()` and `public.employee_directory()` RPCs used by both POS and shift GET requests, grants execution only to `authenticated`, and asks PostgREST to reload its schema cache. Vercel deployment does not apply Supabase migrations automatically.
+The POS API requires every migration under `supabase/migrations/` to be applied to the same Supabase project configured in Vercel. Migration `0004_repair_employee_rpc_functions.sql` restores the `public.current_employee_profile()` and `public.employee_directory()` RPCs, grants execution only to `authenticated`, and asks PostgREST to reload its schema cache. It is intentionally a new migration: if an earlier migration was marked applied but its functions were later removed, applying only the pending migration still repairs them. Vercel deployment does not apply Supabase migrations automatically.
 
 From the repository root, link the Supabase CLI to the production project and apply all pending migrations in order:
 
 ```powershell
 supabase login
+# Compare this exact ref with Supabase Dashboard > Project Settings > General
+# and the hostname in Vercel's NEXT_PUBLIC_SUPABASE_URL before linking.
 supabase link --project-ref <production-project-ref>
 supabase migration list
+supabase db push --dry-run
+# Review the pending migration names before applying; do not use db reset.
 supabase db push
 supabase migration list
 ```
 
-Confirm both functions, their result types, and execute permissions in the Supabase SQL Editor:
+After applying migrations, deploy the application changes to Vercel. Use an authorized, non-production test employee account to sign in, then verify `GET /api/pos` and `GET /api/shifts` return real database-backed responses. Verify the same routes without a session return `401`. Do not test financial mutations against production customer/order data.
+
+Run [`supabase/verify_pos_rpcs.sql`](./supabase/verify_pos_rpcs.sql) in the Supabase SQL Editor to inspect every application RPC's argument names/types, return type, security-definer setting, search path, and execute privileges, as well as RLS status for the application tables.
+
+For the two employee RPCs, expected signatures are `public.current_employee_profile()` returning `(id uuid, name text, role employee_role, active boolean)` and `public.employee_directory()` returning `(id uuid, name text)`. Both should be security definer, executable by `authenticated`, and not executable by `anon`. The migration reloads PostgREST's schema cache; if it is still stale after the migration, run `notify pgrst, 'reload schema';` in the SQL Editor and retry the authenticated API requests.
+
+If you need to inspect only those two functions, this query is also available:
 
 ```sql
 select
@@ -56,8 +66,6 @@ where n.nspname = 'public'
   and p.proname in ('current_employee_profile', 'employee_directory')
 order by p.proname;
 ```
-
-Expected signatures are `public.current_employee_profile()` returning `(id uuid, name text, role employee_role, active boolean)` and `public.employee_directory()` returning `(id uuid, name text)`. Both should be security definer, executable by `authenticated`, and not executable by `anon`. The migration reloads PostgREST's schema cache; if it is still stale after the migration, run `notify pgrst, 'reload schema';` in the SQL Editor and retry the authenticated API requests.
 
 ## Recommended next steps for production
 1. Apply and verify all production database migrations before enabling POS traffic.

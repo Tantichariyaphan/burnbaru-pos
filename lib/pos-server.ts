@@ -1,10 +1,10 @@
 import "server-only";
 
 import { type User } from "@supabase/supabase-js";
-import { isUnauthenticatedAuthError } from "@/lib/api-errors";
+import { isUnauthenticatedAuthError, logRpcFailure } from "@/lib/api-errors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
-export async function getPosContext() {
+export async function getPosContext(route = "API request") {
   const supabase = await createSupabaseServerClient();
   const unauthenticated = { supabase, user: null, employee: null };
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
@@ -23,14 +23,10 @@ export async function getPosContext() {
 
   const { data: profiles, error } = await supabase.rpc("current_employee_profile");
   if (error) {
-    logRpcFailure("current_employee_profile", error);
+    logRpcFailure(route, "current_employee_profile", error);
     throw error;
   }
   return { supabase, user: userData.user, employee: profiles?.[0] ?? null };
-}
-
-export function logRpcFailure(name: string, error: { code?: string; message?: string }) {
-  console.error(`[Supabase RPC ${name}] failed`, { code: error.code, message: error.message });
 }
 
 export function isEmployee(

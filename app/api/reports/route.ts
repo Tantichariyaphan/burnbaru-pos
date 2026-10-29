@@ -1,4 +1,4 @@
-import { apiFailure } from "@/lib/api-errors";
+import { apiFailure, logRpcFailure } from "@/lib/api-errors";
 import { getPosContext, isEmployee } from "@/lib/pos-server";
 import { calculateNetSales } from "@/lib/financial";
 
@@ -16,7 +16,7 @@ function addTotal(rows: Map<string, TotalRow>, name: string, total: number, quan
 
 export async function GET(request: Request) {
   try {
-    const { supabase, user, employee } = await getPosContext();
+    const { supabase, user, employee } = await getPosContext("api/reports GET");
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "ไม่มีสิทธิ์ดูรายงาน" }, { status: 403 });
 
@@ -40,7 +40,10 @@ export async function GET(request: Request) {
 
     const paidOrders = orders ?? [];
     const { data: employees, error: employeesError } = await supabase.rpc("employee_directory");
-    if (employeesError) throw employeesError;
+    if (employeesError) {
+      logRpcFailure("api/reports GET", "employee_directory", employeesError);
+      throw employeesError;
+    }
     const employeeNames = new Map<string, string>((employees ?? []).map((item: { id: string; name: string }) => [item.id, item.name]));
     const refundsInPeriod = refunds ?? [];
     const paymentTotals = new Map<string, TotalRow>();

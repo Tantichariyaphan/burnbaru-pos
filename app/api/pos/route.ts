@@ -1,11 +1,11 @@
-import { apiFailure } from "@/lib/api-errors";
-import { getPosContext, isEmployee, logRpcFailure, validSatang, validUuid } from "@/lib/pos-server";
+import { apiFailure, logRpcFailure } from "@/lib/api-errors";
+import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const { supabase, user, employee } = await getPosContext();
+    const { supabase, user, employee } = await getPosContext("api/pos GET");
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 });
 
@@ -21,7 +21,7 @@ export async function GET() {
     if (failure) throw failure;
     const employeesResult = await supabase.rpc("employee_directory");
     if (employeesResult.error) {
-      logRpcFailure("employee_directory", employeesResult.error);
+      logRpcFailure("api/pos GET", "employee_directory", employeesResult.error);
       throw employeesResult.error;
     }
     const categories = (categoriesResult.data ?? []).map((category) => ({
@@ -53,7 +53,7 @@ function validItems(value: unknown): value is OrderLineInput[] {
 
 export async function POST(request: Request) {
   try {
-    const { supabase, user, employee } = await getPosContext();
+    const { supabase, user, employee } = await getPosContext("api/pos POST");
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "ไม่มีสิทธิ์ใช้งานระบบขาย" }, { status: 403 });
 
@@ -69,7 +69,10 @@ export async function POST(request: Request) {
         p_opening_cash_satang: input.openingCashSatang,
         p_register_id: typeof input.registerId === "string" ? input.registerId.slice(0, 40) : "POS1",
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/pos POST", "open_shift", error);
+        throw error;
+      }
       return Response.json({ shift: data });
     }
 
@@ -91,7 +94,10 @@ export async function POST(request: Request) {
           p_idempotency_key: validUuid(input.idempotencyKey) ? input.idempotencyKey : crypto.randomUUID(),
         };
       const { data, error } = await supabase.rpc(rpcName, rpcArgs);
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/pos POST", rpcName, error);
+        throw error;
+      }
       return Response.json({ order: data });
     }
 
@@ -108,14 +114,20 @@ export async function POST(request: Request) {
         p_reference: typeof input.reference === "string" ? input.reference.slice(0, 120) : null,
         p_idempotency_key: input.idempotencyKey,
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/pos POST", "checkout_order", error);
+        throw error;
+      }
       return Response.json({ checkout: data });
     }
 
     if (input.action === "done") {
       if (!validUuid(input.orderId)) return Response.json({ error: "รหัสออเดอร์ไม่ถูกต้อง" }, { status: 400 });
       const { data, error } = await supabase.rpc("mark_order_done", { p_order_id: input.orderId });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/pos POST", "mark_order_done", error);
+        throw error;
+      }
       return Response.json({ order: data });
     }
 
@@ -133,7 +145,10 @@ export async function POST(request: Request) {
         p_reason: input.reason.trim(),
         p_note: typeof input.note === "string" ? input.note.slice(0, 500) : null,
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/pos POST", "record_cash_movement", error);
+        throw error;
+      }
       return Response.json({ movement: data });
     }
 
@@ -146,7 +161,10 @@ export async function POST(request: Request) {
         p_counted_cash_satang: input.countedCashSatang,
         p_notes: typeof input.notes === "string" ? input.notes.slice(0, 500) : null,
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/pos POST", "close_shift", error);
+        throw error;
+      }
       return Response.json({ closing: data });
     }
 

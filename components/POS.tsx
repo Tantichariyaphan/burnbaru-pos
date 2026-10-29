@@ -501,7 +501,7 @@ export default function POS() {
   const isManager = data.employee.role === "owner" || data.employee.role === "manager";
 
   return (
-    <main className="min-h-screen bg-[#f7f7f2] p-3 text-stone-800 lg:h-screen lg:overflow-hidden">
+    <main className="min-h-screen bg-[#f7f8f5] p-3 text-stone-800 max-sm:p-2 lg:h-screen lg:overflow-hidden">
       <header className="mb-3 flex min-h-[72px] flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#dce2d9] bg-white px-4 py-3 shadow-[0_6px_20px_rgba(31,58,43,.06)]">
         <div className="flex items-center gap-3">
           <div className="grid h-11 w-11 place-items-center rounded-xl bg-[#245b44] text-2xl">🌿</div>

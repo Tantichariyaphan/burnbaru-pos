@@ -1,11 +1,11 @@
-import { apiFailure } from "@/lib/api-errors";
+import { apiFailure, logRpcFailure } from "@/lib/api-errors";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   try {
-    const { supabase, user, employee } = await getPosContext();
+    const { supabase, user, employee } = await getPosContext("api/orders GET");
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "ไม่มีสิทธิ์ดูรายการออเดอร์" }, { status: 403 });
 
@@ -19,7 +19,10 @@ export async function GET(request: Request) {
       if (error) throw error;
       if (!order) return Response.json({ error: "ไม่พบออเดอร์" }, { status: 404 });
       const { data: directory, error: directoryError } = await supabase.rpc("employee_directory");
-      if (directoryError) throw directoryError;
+      if (directoryError) {
+        logRpcFailure("api/orders GET", "employee_directory", directoryError);
+        throw directoryError;
+      }
       const employeeName = directory?.find((person: { id: string; name: string }) => person.id === order.created_by)?.name ?? "—";
       return Response.json({ order: { ...order, employee: { name: employeeName } } });
     }
@@ -43,7 +46,10 @@ export async function GET(request: Request) {
     const { data, error } = await query;
     if (error) throw error;
     const { data: directory, error: directoryError } = await supabase.rpc("employee_directory");
-    if (directoryError) throw directoryError;
+    if (directoryError) {
+      logRpcFailure("api/orders GET", "employee_directory", directoryError);
+      throw directoryError;
+    }
     const employeeNames = new Map<string, string>((directory ?? []).map((person: { id: string; name: string }) => [person.id, person.name]));
     return Response.json({ orders: (data ?? []).map((order) => ({
       ...order,
@@ -56,7 +62,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const { supabase, user, employee } = await getPosContext();
+    const { supabase, user, employee } = await getPosContext("api/orders POST");
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "ไม่มีสิทธิ์จัดการออเดอร์" }, { status: 403 });
     const body: unknown = await request.json();
@@ -71,7 +77,10 @@ export async function POST(request: Request) {
       const { data, error } = await supabase.rpc("cancel_open_order", {
         p_order_id: input.orderId, p_reason: input.reason.trim().slice(0, 180),
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/orders POST", "cancel_open_order", error);
+        throw error;
+      }
       return Response.json({ order: data });
     }
     if (input.action === "refund") {
@@ -83,7 +92,10 @@ export async function POST(request: Request) {
         p_order_id: input.orderId, p_amount_satang: input.amountSatang,
         p_reason: input.reason.trim().slice(0, 180),
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/orders POST", "refund_order", error);
+        throw error;
+      }
       return Response.json({ refund: data });
     }
     if (input.action === "edit" && validUuid(input.orderId) && Array.isArray(input.items) &&
@@ -102,7 +114,10 @@ export async function POST(request: Request) {
         }),
         p_discount_satang: input.discountSatang ?? 0,
       });
-      if (error) throw error;
+      if (error) {
+        logRpcFailure("api/orders POST", "update_open_order", error);
+        throw error;
+      }
       return Response.json({ order: data });
     }
     return Response.json({ error: "คำขอไม่ถูกต้อง" }, { status: 400 });

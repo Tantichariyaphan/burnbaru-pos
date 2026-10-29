@@ -5,6 +5,28 @@ export function isUnauthenticatedAuthError(error: unknown) {
     (isAuthError(error) && (error.status === 401 || error.status === 403));
 }
 
+function redactDiagnostic(value: string | undefined) {
+  return value
+    ?.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+    .replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[REDACTED TOKEN]")
+    .replace(/\b(?:sb_secret_|sb_publishable_)[A-Za-z0-9_-]+\b/g, "[REDACTED KEY]")
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, "[REDACTED EMAIL]")
+    .slice(0, 500);
+}
+
+export function logRpcFailure(
+  route: string,
+  name: string,
+  error: { code?: string; message?: string; details?: string; hint?: string },
+) {
+  console.error(`[${route}] Supabase RPC ${name} failed`, {
+    code: error.code,
+    message: redactDiagnostic(error.message),
+    details: redactDiagnostic(error.details),
+    hint: redactDiagnostic(error.hint),
+  });
+}
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "object" && error !== null && "message" in error) {

@@ -1,5 +1,5 @@
-import { apiFailure } from "@/lib/api-errors";
-import { getPosContext, isEmployee, logRpcFailure } from "@/lib/pos-server";
+import { apiFailure, logRpcFailure } from "@/lib/api-errors";
+import { getPosContext, isEmployee } from "@/lib/pos-server";
 import { calculateExpectedCash } from "@/lib/financial";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ function sum(rows: Array<{ amount_satang: number }>) {
 
 export async function GET() {
   try {
-    const { supabase, user, employee } = await getPosContext();
+    const { supabase, user, employee } = await getPosContext("api/shifts GET");
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "ไม่มีสิทธิ์ดูข้อมูลกะ" }, { status: 403 });
 
@@ -24,7 +24,7 @@ export async function GET() {
     if (closingError) throw closingError;
     const { data: directory, error: directoryError } = await supabase.rpc("employee_directory");
     if (directoryError) {
-      logRpcFailure("employee_directory", directoryError);
+      logRpcFailure("api/shifts GET", "employee_directory", directoryError);
       throw directoryError;
     }
     const employeeNames = new Map<string, string>((directory ?? []).map((person: { id: string; name: string }) => [person.id, person.name]));
