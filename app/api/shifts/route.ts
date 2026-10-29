@@ -16,12 +16,19 @@ export async function GET() {
     const [{ data: activeShift, error: shiftError }, { data: closings, error: closingError }] = await Promise.all([
       supabase.from("shifts").select("id, register_id, opening_cash_satang, opened_at, opened_by")
         .eq("status", "open").order("opened_at", { ascending: false }).limit(1).maybeSingle(),
-      supabase.from("shift_closings").select("*, employee:employees!shift_closings_closed_by_fkey(name)")
+      supabase.from("shift_closings").select("*")
         .order("closed_at", { ascending: false }).limit(50),
     ]);
     if (shiftError) throw shiftError;
     if (closingError) throw closingError;
-    if (!activeShift) return Response.json({ activeShift: null, preview: null, closings: closings ?? [] });
+    const { data: directory, error: directoryError } = await supabase.rpc("employee_directory");
+    if (directoryError) throw directoryError;
+    const employeeNames = new Map<string, string>((directory ?? []).map((person: { id: string; name: string }) => [person.id, person.name]));
+    const closingsWithNames = (closings ?? []).map((closing) => ({
+      ...closing,
+      employee: { name: employeeNames.get(String(closing.closed_by)) ?? "—" },
+    }));
+    if (!activeShift) return Response.json({ activeShift: null, preview: null, closings: closingsWithNames });
 
     const [paymentsResult, refundsResult, movementsResult, ordersResult] = await Promise.all([
       supabase.from("payments").select("method, amount_satang").eq("shift_id", activeShift.id),
@@ -63,7 +70,7 @@ export async function GET() {
         net_sales_satang: cashSales + transferSales - sum(refunds),
         order_count: (ordersResult.data ?? []).length,
       },
-      closings: closings ?? [],
+      closings: closingsWithNames,
     });
   } catch (error) {
     return jsonError(error, 500);

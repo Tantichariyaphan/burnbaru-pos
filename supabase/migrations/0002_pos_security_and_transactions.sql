@@ -165,6 +165,17 @@ as $$
   order by e.name
 $$;
 
+create or replace function current_employee_profile()
+returns table(id uuid, name text, role employee_role, active boolean)
+language sql stable security definer
+set search_path = public, pg_temp
+as $$
+  select e.id, e.name, e.role, e.active
+  from employees e
+  where e.auth_user_id = (select auth.uid()) and e.active
+  limit 1
+$$;
+
 alter table employees enable row level security;
 alter table categories enable row level security;
 alter table products enable row level security;
@@ -229,6 +240,8 @@ create policy shift_closings_read on shift_closings for select to authenticated
 
 revoke insert, update, delete on all tables in schema public from anon, authenticated;
 grant select on all tables in schema public to authenticated;
+revoke select on table employees from authenticated;
+grant select (id, name, role, active) on table employees to authenticated;
 
 create or replace function open_shift(p_opening_cash_satang integer, p_register_id text default 'POS1')
 returns jsonb language plpgsql security definer
@@ -370,6 +383,8 @@ begin
   if v_order.created_by <> v_employee_id and current_employee_role() not in ('owner', 'manager') then
     raise exception 'Not authorized to edit this order' using errcode = '42501';
   end if;
+  perform 1 from shifts where id = v_order.shift_id and status = 'open' for update;
+  if not found then raise exception 'The order shift is closed'; end if;
   if p_discount_satang > 0 and current_employee_role() not in ('owner', 'manager') then
     raise exception 'Only a manager can apply a discount' using errcode = '42501';
   end if;
@@ -430,6 +445,8 @@ begin
   if v_order.created_by <> v_employee_id and current_employee_role() not in ('owner', 'manager') then
     raise exception 'Not authorized to pay this order' using errcode = '42501';
   end if;
+  perform 1 from shifts where id = v_order.shift_id and status = 'open' for update;
+  if not found then raise exception 'The order shift is closed'; end if;
   if p_method = 'cash' and (p_received_satang is null or p_received_satang < v_order.total_satang) then
     raise exception 'Cash received is less than the order total';
   end if;
@@ -647,6 +664,7 @@ revoke all on function current_employee_id() from public, anon;
 revoke all on function current_employee_role() from public, anon;
 revoke all on function assert_active_employee() from public, anon;
 revoke all on function employee_directory() from public, anon;
+revoke all on function current_employee_profile() from public, anon;
 revoke all on function open_shift(integer, text) from public, anon;
 revoke all on function create_order(jsonb, integer, uuid) from public, anon;
 revoke all on function update_open_order(uuid, jsonb, integer) from public, anon;
@@ -659,6 +677,7 @@ revoke all on function close_shift(uuid, integer, text) from public, anon;
 grant execute on function current_employee_id() to authenticated;
 grant execute on function current_employee_role() to authenticated;
 grant execute on function employee_directory() to authenticated;
+grant execute on function current_employee_profile() to authenticated;
 grant execute on function open_shift(integer, text) to authenticated;
 grant execute on function create_order(jsonb, integer, uuid) to authenticated;
 grant execute on function update_open_order(uuid, jsonb, integer) to authenticated;

@@ -9,15 +9,9 @@ export async function getPosContext() {
   if (authError) throw authError;
   if (!user) return { supabase, user: null, employee: null };
 
-  const { data: employee, error } = await supabase
-    .from("employees")
-    .select("id, name, email, role, active")
-    .eq("auth_user_id", user.id)
-    .eq("active", true)
-    .maybeSingle();
-
+  const { data: profiles, error } = await supabase.rpc("current_employee_profile");
   if (error) throw error;
-  return { supabase, user, employee };
+  return { supabase, user, employee: profiles?.[0] ?? null };
 }
 
 export function isEmployee(
