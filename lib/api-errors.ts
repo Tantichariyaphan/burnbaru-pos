@@ -27,6 +27,19 @@ export function logRpcFailure(
   });
 }
 
+export function logQueryFailure(
+  route: string,
+  name: string,
+  error: { code?: string; message?: string; details?: string; hint?: string },
+) {
+  console.error(`[${route}] Supabase query ${name} failed`, {
+    code: error.code,
+    message: redactDiagnostic(error.message),
+    details: redactDiagnostic(error.details),
+    hint: redactDiagnostic(error.hint),
+  });
+}
+
 function errorMessage(error: unknown) {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "object" && error !== null && "message" in error) {
@@ -55,6 +68,10 @@ export function apiFailure(error: unknown, route: string) {
   }
 
   const name = error instanceof Error ? error.name : "UnknownError";
-  console.error(`[${route}] Unexpected request failure`, { name, code });
+  const message = typeof error === "object" && error !== null && "message" in error &&
+    typeof error.message === "string"
+    ? redactDiagnostic(error.message)
+    : undefined;
+  console.error(`[${route}] Unexpected request failure`, { name, code, message });
   return Response.json({ error: "เกิดข้อผิดพลาดภายในระบบ กรุณาลองอีกครั้ง" }, { status: 500 });
 }

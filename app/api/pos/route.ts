@@ -1,4 +1,4 @@
-import { apiFailure, logRpcFailure } from "@/lib/api-errors";
+import { apiFailure, logQueryFailure, logRpcFailure } from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 
@@ -19,8 +19,19 @@ export async function GET() {
       supabase.from("tax_configuration").select("enabled, rate_bps").eq("singleton", true).maybeSingle(),
     ]);
 
-    const failure = [categoriesResult.error, productsResult.error, shiftResult.error, queueResult.error, taxResult.error].find(Boolean);
-    if (failure) throw failure;
+    const checks = [
+      ["categories", categoriesResult.error],
+      ["products", productsResult.error],
+      ["shifts", shiftResult.error],
+      ["orders_queue", queueResult.error],
+      ["tax_configuration", taxResult.error],
+    ] as const;
+    for (const [name, error] of checks) {
+      if (error) {
+        logQueryFailure("api/pos GET", name, error);
+        return apiFailure(error, `api/pos GET: ${name}`);
+      }
+    }
     if (!taxResult.data) throw new Error("Tax configuration is missing");
     const employeesResult = await supabase.rpc("employee_directory");
     if (employeesResult.error) {
