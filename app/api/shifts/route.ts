@@ -1,4 +1,5 @@
 import { apiFailure, logRpcFailure } from "@/lib/api-errors";
+import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee } from "@/lib/pos-server";
 import { calculateExpectedCash } from "@/lib/financial";
 
@@ -16,7 +17,7 @@ export async function GET() {
 
     const [{ data: activeShift, error: shiftError }, { data: closings, error: closingError }] = await Promise.all([
       supabase.from("shifts").select("id, register_id, opening_cash_satang, opened_at, opened_by")
-        .eq("status", "open").order("opened_at", { ascending: false }).limit(1).maybeSingle(),
+        .eq("register_id", POS_REGISTER_ID).eq("status", "open").maybeSingle(),
       supabase.from("shift_closings").select("*")
         .order("closed_at", { ascending: false }).limit(50),
     ]);

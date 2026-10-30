@@ -3,6 +3,7 @@ with expected(signature) as (
     ('public.current_employee_profile()'),
     ('public.employee_directory()'),
     ('public.open_shift(integer, text)'),
+    ('public.add_pos_product(uuid, text, text, integer, boolean)'),
     ('public.create_order(jsonb, integer, uuid)'),
     ('public.update_open_order(uuid, jsonb, integer)'),
     ('public.checkout_order(uuid, public.payment_method, integer, text, uuid)'),
@@ -47,3 +48,15 @@ where n.nspname = 'public'
   )
 group by c.relname, c.relrowsecurity, c.relforcerowsecurity
 order by c.relname;
+
+select
+  indexname,
+  indexdef
+from pg_indexes
+where schemaname = 'public'
+  and indexname in (
+    'one_open_shift_per_register',
+    'orders_idempotency_key_unique',
+    'payments_one_per_order'
+  )
+order by indexname;

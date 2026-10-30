@@ -88,6 +88,7 @@ export type PosReceipt = {
 
 export type PosShift = {
   id: string;
+  register_id: string;
   opening_cash_satang: number;
   opened_at: string;
   opened_by?: string;
@@ -97,6 +98,7 @@ export type PosData = {
   employee: { id: string; name: string; role: "owner" | "manager" | "cashier" };
   categories: PosCategory[];
   activeShift: PosShift | null;
+  taxConfiguration: { enabled: boolean; rate_bps: number };
   queue: PosOrder[];
   employees?: Array<{ id: string; name: string }>;
 };

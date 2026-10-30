@@ -1,16 +1,6 @@
-# Grandfa Farm Cafe & Resort POS — Starter
+# BurnBau POS
 
-Thai-first POS starter designed for iPad landscape. Includes a three-column demo UI, menu categories, cart quantity controls, checkout modal (cash/transfer), paid/preparation list, Done action, open/close shift demo, cash-in/out demo, and a simple summary. Includes an initial Supabase schema and seed file.
-
-## Important limitation
-**This ZIP is a starter/demo, not yet a production-ready POS.** The UI currently keeps orders, shifts, and cash movements in React state only. Data is lost when the page reloads, and the payment/shift dialogs do not write to Supabase yet. Do not use it as the only record of real sales until the Supabase authentication, RLS, server actions, transactional payment RPCs, and tests are implemented and verified.
-
-## Menu pricing
-Prices explicitly mapped from the supplied list:
-- Original Cheesecake ฿59
-- Matcha Cheesecake ฿79
-- Red Velvet Cheesecake ฿69
-The drink-price mapping in the supplied list is ambiguous. All drinks are disabled in the demo and seeded as unavailable until the owner confirms the price for each drink.
+Thai-first point-of-sale application built with Next.js and Supabase. The application loads its catalog, employee, shift, order, payment, and reporting data from Supabase; it requires configured Supabase Auth, applied database migrations, and active employee profiles before it can process sales. Seed data is optional and should only be applied when initializing a project that needs the sample catalog.
 
 ## Run locally
 Requirements: Node.js 20+
@@ -24,12 +14,12 @@ Open http://localhost:3000.
 ## Deploy to Vercel
 1. Push this folder to a private/public Git repository.
 2. Import the repository in Vercel.
-3. Deploy. The demo UI does not require environment variables.
-4. Configure the Supabase URL and anon key in Vercel, then apply all pending production migrations as described below. Apply `supabase/seed.sql` only when the project needs the sample product catalog.
+3. Configure `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` in Vercel for the intended Supabase project.
+4. Apply all pending production migrations as described below. Apply `supabase/seed.sql` only when the project needs the sample product catalog.
 
 ### Apply the production POS database migrations
 
-The POS API requires every migration under `supabase/migrations/` to be applied to the same Supabase project configured in Vercel. Migration `0004_repair_employee_rpc_functions.sql` restores the employee RPCs. Migration `0005_idempotent_shifts_and_product_catalog.sql` makes opening a register shift idempotent and adds a manager-only product creation RPC. Vercel deployment does not apply Supabase migrations automatically.
+The POS API requires every migration under `supabase/migrations/` to be applied to the same Supabase project configured in Vercel. Migration `0004_repair_employee_rpc_functions.sql` restores the employee RPCs. Migration `0005_idempotent_shifts_and_product_catalog.sql` makes opening a register shift idempotent and adds product creation. Migration `0006_pos_consistency_and_idempotency.sql` prevents duplicate active product names within a category, serializes retried order/checkout requests, and scopes POS transactions to the same `POS1` register used by the UI. Vercel deployment does not apply Supabase migrations automatically.
 
 The POS asks the employee to open a shift explicitly; background data refreshes no longer reopen the opening-cash dialog. Repeated open-shift requests for a register return its existing shift and do not create another opening cash record. Owners and managers can add products from the menu screen; the new products are stored in Supabase and are used by the existing order and reporting flows.
 

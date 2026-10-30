@@ -4,6 +4,7 @@ import { test } from "node:test";
 
 const migrationPath = new URL("../supabase/migrations/0004_repair_employee_rpc_functions.sql", import.meta.url);
 const shiftCatalogMigrationPath = new URL("../supabase/migrations/0005_idempotent_shifts_and_product_catalog.sql", import.meta.url);
+const consistencyMigrationPath = new URL("../supabase/migrations/0006_pos_consistency_and_idempotency.sql", import.meta.url);
 
 test("employee RPC repair migration restores the data-backed authenticated functions", async () => {
   const migration = await readFile(migrationPath, "utf8");
@@ -32,4 +33,21 @@ test("shift opening is idempotent and catalog writes require manager-level autho
   assert.match(migration, /insert into public\.products/i);
   assert.match(migration, /revoke all on function public\.add_pos_product\(uuid, text, text, integer, boolean\) from public, anon, authenticated/i);
   assert.match(migration, /grant execute on function public\.add_pos_product\(uuid, text, text, integer, boolean\) to authenticated/i);
+});
+
+test("consistency migration serializes shift catalog, order, and checkout operations", async () => {
+  const migration = await readFile(consistencyMigrationPath, "utf8");
+  assert.match(migration, /where register_id = 'POS1' and status = 'open'/i);
+  assert.match(migration, /burnbaru-pos-product:/i);
+  assert.match(migration, /lower\(trim\(name\)\) = lower\(v_name\)/i);
+  assert.match(migration, /burnbaru-pos-order:/i);
+  assert.match(migration, /burnbaru-pos-checkout:/i);
+  assert.match(migration, /v_existing\.received_satang is distinct from p_received_satang/i);
+  assert.match(migration, /v_existing\.reference is distinct from v_reference/i);
+  assert.match(migration, /from public\.categories[\s\S]*?for update/i);
+  assert.match(migration, /set status = 'preparing', payment_method = p_method, paid_at = now\(\)/i);
+  assert.match(migration, /insert into public\.payments/i);
+  assert.match(migration, /insert into public\.receipts/i);
+  assert.match(migration, /notify pgrst, 'reload schema'/i);
+  assert.doesNotMatch(migration, /grant execute on function .* to anon/i);
 });

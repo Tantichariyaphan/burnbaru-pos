@@ -1,4 +1,5 @@
 import { apiFailure, logRpcFailure } from "@/lib/api-errors";
+import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
@@ -9,16 +10,18 @@ export async function GET() {
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 });
 
-    const [categoriesResult, productsResult, shiftResult, queueResult] = await Promise.all([
+    const [categoriesResult, productsResult, shiftResult, queueResult, taxResult] = await Promise.all([
       supabase.from("categories").select("id, name, emoji, sort_order").eq("active", true).order("sort_order"),
       supabase.from("products").select("id, name, emoji, category_id, price_satang, available, sort_order").eq("active", true).order("sort_order"),
-      supabase.from("shifts").select("id, opening_cash_satang, opened_at, opened_by").eq("status", "open").order("opened_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("shifts").select("id, register_id, opening_cash_satang, opened_at, opened_by").eq("register_id", POS_REGISTER_ID).eq("status", "open").maybeSingle(),
       supabase.from("orders").select("id, order_no, total_satang, status, paid_at, created_at, payment_method, order_items(id, name_snapshot, emoji_snapshot, unit_price_satang, quantity, line_total_satang)")
         .eq("status", "preparing").order("paid_at", { ascending: true }).limit(60),
+      supabase.from("tax_configuration").select("enabled, rate_bps").eq("singleton", true).maybeSingle(),
     ]);
 
-    const failure = [categoriesResult.error, productsResult.error, shiftResult.error, queueResult.error].find(Boolean);
+    const failure = [categoriesResult.error, productsResult.error, shiftResult.error, queueResult.error, taxResult.error].find(Boolean);
     if (failure) throw failure;
+    if (!taxResult.data) throw new Error("Tax configuration is missing");
     const employeesResult = await supabase.rpc("employee_directory");
     if (employeesResult.error) {
       logRpcFailure("api/pos GET", "employee_directory", employeesResult.error);
@@ -33,6 +36,7 @@ export async function GET() {
       employee,
       categories,
       activeShift: shiftResult.data,
+      taxConfiguration: taxResult.data ?? { enabled: false, rate_bps: 0 },
       queue: queueResult.data ?? [],
       employees: employeesResult.data ?? [],
     });
@@ -67,7 +71,7 @@ export async function POST(request: Request) {
       if (!validSatang(input.openingCashSatang, true)) return Response.json({ error: "ยอดเงินเปิดกะไม่ถูกต้อง" }, { status: 400 });
       const { data, error } = await supabase.rpc("open_shift", {
         p_opening_cash_satang: input.openingCashSatang,
-        p_register_id: typeof input.registerId === "string" ? input.registerId.slice(0, 40) : "POS1",
+        p_register_id: POS_REGISTER_ID,
       });
       if (error) {
         logRpcFailure("api/pos POST", "open_shift", error);

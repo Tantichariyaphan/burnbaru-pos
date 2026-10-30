@@ -2,6 +2,7 @@
 
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatTHB } from "@/lib/money";
+import { calculateCartTotals, filterPosProducts, sameActiveShift } from "@/lib/pos-catalog";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { PosData, PosOrder, PosProduct, PosReceipt } from "@/lib/pos-types";
 
@@ -31,6 +32,11 @@ type ShiftClosing = ShiftPreview & {
   employee?: { name: string } | { name: string }[] | null;
 };
 type ReportRow = { name: string; total_satang: number; quantity?: number; count?: number; refunds_satang?: number; net_satang?: number };
+type ShiftData = {
+  activeShift: PosData["activeShift"];
+  preview: ShiftPreview | null;
+  closings: ShiftClosing[];
+};
 type ReportData = {
   range: { from: string; to: string };
   summary: {
@@ -138,6 +144,7 @@ export default function POS() {
   const [shiftPreview, setShiftPreview] = useState<ShiftPreview | null>(null);
   const [shiftClosings, setShiftClosings] = useState<ShiftClosing[]>([]);
   const [loading, setLoading] = useState(true);
+  const loadRequestId = useRef(0);
   const [authRequired, setAuthRequired] = useState(false);
   const [blockedMessage, setBlockedMessage] = useState("");
   const [error, setError] = useState("");
@@ -188,25 +195,45 @@ export default function POS() {
   const [printedReceipt, setPrintedReceipt] = useState<PosReceipt | null>(null);
 
   const loadData = useCallback(async (showSpinner = false) => {
+    const requestId = ++loadRequestId.current;
     if (showSpinner) setLoading(true);
     setError("");
     try {
-      const [pos, shiftData] = await Promise.all([
-        api<PosData>("/api/pos"),
-        api<{ activeShift: unknown; preview: ShiftPreview | null; closings: ShiftClosing[] }>("/api/shifts"),
-      ]);
+      let snapshot: [PosData, ShiftData] | null = null;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const [pos, shiftData] = await Promise.all([
+          api<PosData>("/api/pos"),
+          api<ShiftData>("/api/shifts"),
+        ]);
+        if (sameActiveShift(pos.activeShift, shiftData.activeShift)) {
+          snapshot = [pos, shiftData];
+          break;
+        }
+      }
+      if (requestId !== loadRequestId.current) return;
+      if (!snapshot) {
+        setData(null);
+        setShiftPreview(null);
+        setShiftClosings([]);
+        throw new Error("ข้อมูลกะขายไม่ตรงกัน กรุณากดรีเฟรชเพื่อตรวจสอบสถานะล่าสุด");
+      }
+      const [pos, shiftData] = snapshot;
       setData(pos);
       setShiftPreview(shiftData.preview);
       setShiftClosings(shiftData.closings);
       setAuthRequired(false);
       setBlockedMessage("");
+      setActiveCategory((current) =>
+        current === "all" || pos.categories.some((category) => category.id === current) ? current : "all",
+      );
     } catch (reason) {
+      if (requestId !== loadRequestId.current) return;
       const message = reason instanceof Error ? reason.message : "โหลดข้อมูลไม่สำเร็จ";
       if (message.includes("กรุณาเข้าสู่ระบบ")) setAuthRequired(true);
       else if (message.includes("โปรไฟล์พนักงาน")) setBlockedMessage(message);
       else setError(message);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestId.current) setLoading(false);
     }
   }, []);
 
@@ -262,11 +289,15 @@ export default function POS() {
   }, [data, fetchReport, tab]);
 
   const products = useMemo(() => data?.categories.flatMap((category) => category.products) ?? [], [data]);
-  const visibleProducts = useMemo(() => products.filter((product) => {
-    const categoryMatch = activeCategory === "all" || product.category_id === activeCategory;
-    return categoryMatch && product.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
-  }), [activeCategory, products, search]);
+  const visibleProducts = useMemo(
+    () => filterPosProducts(products, activeCategory, search),
+    [activeCategory, products, search],
+  );
   const subtotal = cart.reduce((total, line) => total + line.product.price_satang * line.quantity, 0);
+  const { taxSatang, totalSatang } = calculateCartTotals(
+    subtotal,
+    data?.taxConfiguration ?? { enabled: false, rate_bps: 0 },
+  );
   const itemCount = cart.reduce((total, line) => total + line.quantity, 0);
 
   function notify(message: string) {
@@ -536,7 +567,7 @@ export default function POS() {
       <header className="mb-3 flex min-h-[72px] flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#dce2d9] bg-white px-4 py-3 shadow-[0_6px_20px_rgba(31,58,43,.06)]">
         <div className="flex items-center gap-3">
           <div className="grid h-11 w-11 place-items-center rounded-xl bg-[#245b44] text-2xl">🌿</div>
-          <div><h1 className="text-lg font-extrabold tracking-tight">BurnBau</h1><p className="text-xs text-stone-500">{data.employee.name} · {data.activeShift ? "กะเปิดอยู่" : "ยังไม่ได้เปิดกะ"}</p></div>
+          <div><h1 className="text-lg font-extrabold tracking-tight">BurnBau</h1><p className="text-xs text-stone-500">{data.employee.name} · {data.employee.role === "owner" ? "เจ้าของ" : data.employee.role === "manager" ? "ผู้จัดการ" : "พนักงานขาย"} · {data.activeShift ? `กะเปิดอยู่ · เงินเริ่มต้น ${formatTHB(data.activeShift.opening_cash_satang)}` : "ยังไม่ได้เปิดกะ"}</p></div>
         </div>
         <nav className="flex items-center gap-1" aria-label="เมนูหลัก">
           {([["sale", "ขาย"], ["history", "ประวัติออเดอร์"], ["reports", "รายงาน"]] as const).map(([id, label]) => (
@@ -565,6 +596,7 @@ export default function POS() {
             </div>
             <div className="grid flex-1 grid-cols-2 content-start gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
               {visibleProducts.map((product) => <button key={product.id} disabled={!product.available || !data.activeShift || busy || checkoutPending} onClick={() => addProduct(product)} className={`min-h-32 rounded-xl border p-3 text-left transition ${product.available && data.activeShift ? "border-stone-200 hover:border-[#5b826c] hover:bg-[#f4faf5]" : "border-stone-100 bg-stone-50 opacity-60"}`}><div className="mb-3 text-2xl">{product.emoji ?? "🍽️"}</div><p className="min-h-10 text-sm font-bold leading-5">{product.name}</p><div className="mt-2 flex items-center justify-between"><span className={`text-sm font-extrabold ${product.available ? "text-[#245b44]" : "text-amber-700"}`}>{product.available ? formatTHB(product.price_satang) : "ยังไม่เปิดขาย"}</span><span className="grid h-6 w-6 place-items-center rounded-full bg-white text-lg text-stone-400">+</span></div></button>)}
+              {!visibleProducts.length && <div className="col-span-full rounded-xl border border-dashed border-stone-200 px-4 py-10 text-center text-sm text-stone-500">{products.length ? "ไม่พบสินค้าที่ตรงกับคำค้นหาหรือหมวดหมู่นี้" : data.categories.length ? "ยังไม่มีสินค้าในหมวดหมู่ที่เปิดใช้งาน" : "ยังไม่มีหมวดหมู่ที่เปิดใช้งาน กรุณาตรวจสอบข้อมูลเมนูในระบบ"}</div>}
             </div>
           </section>
 
@@ -576,7 +608,8 @@ export default function POS() {
             </div>
             <div className="mt-4 border-t border-stone-100 pt-4">
               <div className="flex justify-between text-sm text-stone-500"><span>ยอดก่อนภาษี</span><span>{formatTHB(subtotal)}</span></div>
-              <div className="mt-2 flex justify-between text-lg font-extrabold"><span>รวม</span><span className="text-[#245b44]">{formatTHB(subtotal)}</span></div>
+              {data.taxConfiguration.enabled && <div className="mt-1 flex justify-between text-sm text-stone-500"><span>ภาษี</span><span>{formatTHB(taxSatang)}</span></div>}
+              <div className="mt-2 flex justify-between text-lg font-extrabold"><span>รวม</span><span className="text-[#245b44]">{formatTHB(totalSatang)}</span></div>
               <div className="mt-4 grid grid-cols-2 gap-2">
                 <button disabled={!cart.length || busy || checkoutPending} onClick={async () => {
                   setBusy(true);
