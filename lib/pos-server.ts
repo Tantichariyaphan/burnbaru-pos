@@ -4,6 +4,12 @@ import { type User } from "@supabase/supabase-js";
 import { isUnauthenticatedAuthError, logRpcFailure } from "@/lib/api-errors";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
+type PosEmployee = {
+  id: string;
+  role: string;
+  active: boolean;
+};
+
 export async function getPosContext(route = "API request") {
   const supabase = await createSupabaseServerClient();
   const unauthenticated = { supabase, user: null, employee: null };
@@ -31,9 +37,9 @@ export async function getPosContext(route = "API request") {
 
 export function isEmployee(
   user: User | null,
-  employee: { id: string; role: string } | null,
-): employee is { id: string; role: string } {
-  return Boolean(user && employee);
+  employee: PosEmployee | null,
+): employee is PosEmployee {
+  return Boolean(user && employee && employee.active === true);
 }
 
 export function errorMessage(error: unknown) {

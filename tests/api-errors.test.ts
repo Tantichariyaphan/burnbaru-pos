@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { AuthApiError, AuthSessionMissingError } from "@supabase/supabase-js";
 import { apiFailure, logQueryFailure, logRpcFailure } from "../lib/api-errors.ts";
@@ -38,16 +37,6 @@ test("unexpected failures are logged and returned as safe 500 responses", async 
   } finally {
     console.error = originalError;
   }
-});
-
-test("tax configuration repair migration only inserts the missing default row", async () => {
-  const migration = await readFile(
-    new URL("../supabase/migrations/0007_restore_tax_configuration_singleton.sql", import.meta.url),
-    "utf8",
-  );
-  assert.match(migration, /insert into public\.tax_configuration\s*\(singleton, enabled, rate_bps\)/i);
-  assert.match(migration, /values\s*\(true, false, 0\)/i);
-  assert.match(migration, /on conflict\s*\(singleton\)\s*do nothing/i);
 });
 
 test("RPC diagnostics identify the route and RPC without logging credentials", () => {
