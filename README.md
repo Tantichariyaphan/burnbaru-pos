@@ -41,6 +41,8 @@ After applying migrations, deploy the application changes to Vercel. Use an auth
 
 Run [`supabase/verify_pos_rpcs.sql`](./supabase/verify_pos_rpcs.sql) in the Supabase SQL Editor to inspect every application RPC's argument names/types, return type, security-definer setting, search path, and execute privileges, as well as RLS status for the application tables.
 
+When an authenticated `GET /api/pos` fails, run [`supabase/verify_authenticated_pos.sql`](./supabase/verify_authenticated_pos.sql) next. It temporarily assumes one active mapped employee inside a transaction, probes each read/RPC used by the endpoint, checks the required columns and `orders` → `order_items` foreign key, then rolls back. It does not modify POS business data or the open shift.
+
 For the two employee RPCs, expected signatures are `public.current_employee_profile()` returning `(id uuid, name text, role employee_role, active boolean)` and `public.employee_directory()` returning `(id uuid, name text)`. Both should be security definer, executable by `authenticated`, and not executable by `anon`. The migration reloads PostgREST's schema cache; if it is still stale after the migration, run `notify pgrst, 'reload schema';` in the SQL Editor and retry the authenticated API requests.
 
 If you need to inspect only those two functions, this query is also available:

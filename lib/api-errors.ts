@@ -5,6 +5,11 @@ export function isUnauthenticatedAuthError(error: unknown) {
     (isAuthError(error) && (error.status === 401 || error.status === 403));
 }
 
+export function withRequestId(response: Response, requestId?: string) {
+  if (requestId) response.headers.set("x-request-id", requestId);
+  return response;
+}
+
 function redactDiagnostic(value: string | undefined) {
   return value
     ?.replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
@@ -18,8 +23,10 @@ export function logRpcFailure(
   route: string,
   name: string,
   error: { code?: string; message?: string; details?: string; hint?: string },
+  requestId?: string,
 ) {
   console.error(`[${route}] Supabase RPC ${name} failed`, {
+    requestId,
     code: error.code,
     message: redactDiagnostic(error.message),
     details: redactDiagnostic(error.details),
@@ -31,8 +38,10 @@ export function logQueryFailure(
   route: string,
   name: string,
   error: { code?: string; message?: string; details?: string; hint?: string },
+  requestId?: string,
 ) {
   console.error(`[${route}] Supabase query ${name} failed`, {
+    requestId,
     code: error.code,
     message: redactDiagnostic(error.message),
     details: redactDiagnostic(error.details),

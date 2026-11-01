@@ -1,12 +1,13 @@
-import { apiFailure, logQueryFailure, logRpcFailure } from "@/lib/api-errors";
+import { apiFailure, logQueryFailure, logRpcFailure, withRequestId } from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const requestId = crypto.randomUUID();
   try {
-    const { supabase, user, employee } = await getPosContext("api/pos GET");
+    const { supabase, user, employee } = await getPosContext("api/pos GET", requestId);
     if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
     if (!isEmployee(user, employee)) return Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 });
 
@@ -28,14 +29,14 @@ export async function GET() {
     ] as const;
     for (const [name, error] of checks) {
       if (error) {
-        logQueryFailure("api/pos GET", name, error);
-        return apiFailure(error, `api/pos GET: ${name}`);
+        logQueryFailure("api/pos GET", name, error, requestId);
+        return withRequestId(apiFailure(error, `api/pos GET: ${name}`), requestId);
       }
     }
     if (!taxResult.data) throw new Error("Tax configuration is missing");
     const employeesResult = await supabase.rpc("employee_directory");
     if (employeesResult.error) {
-      logRpcFailure("api/pos GET", "employee_directory", employeesResult.error);
+      logRpcFailure("api/pos GET", "employee_directory", employeesResult.error, requestId);
       throw employeesResult.error;
     }
     const categories = (categoriesResult.data ?? []).map((category) => ({
@@ -43,16 +44,16 @@ export async function GET() {
       products: (productsResult.data ?? []).filter((product) => product.category_id === category.id),
     }));
 
-    return Response.json({
+    return withRequestId(Response.json({
       employee,
       categories,
       activeShift: shiftResult.data,
       taxConfiguration: taxResult.data ?? { enabled: false, rate_bps: 0 },
       queue: queueResult.data ?? [],
       employees: employeesResult.data ?? [],
-    });
+    }), requestId);
   } catch (error) {
-    return apiFailure(error, "api/pos GET");
+    return withRequestId(apiFailure(error, "api/pos GET"), requestId);
   }
 }
 

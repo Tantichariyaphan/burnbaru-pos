@@ -5,6 +5,7 @@ import { test } from "node:test";
 const migrationPath = new URL("../supabase/migrations/0004_repair_employee_rpc_functions.sql", import.meta.url);
 const shiftCatalogMigrationPath = new URL("../supabase/migrations/0005_idempotent_shifts_and_product_catalog.sql", import.meta.url);
 const consistencyMigrationPath = new URL("../supabase/migrations/0006_pos_consistency_and_idempotency.sql", import.meta.url);
+const authenticatedPosVerificationPath = new URL("../supabase/verify_authenticated_pos.sql", import.meta.url);
 
 test("employee RPC repair migration restores the data-backed authenticated functions", async () => {
   const migration = await readFile(migrationPath, "utf8");
@@ -50,4 +51,20 @@ test("consistency migration serializes shift catalog, order, and checkout operat
   assert.match(migration, /insert into public\.receipts/i);
   assert.match(migration, /notify pgrst, 'reload schema'/i);
   assert.doesNotMatch(migration, /grant execute on function .* to anon/i);
+});
+
+test("authenticated POS verification keeps the production read-path probes read-only", async () => {
+  const verification = await readFile(authenticatedPosVerificationPath, "utf8");
+  assert.match(verification, /^begin;/im);
+  assert.match(verification, /set local role authenticated/i);
+  assert.match(verification, /rpc\.current_employee_profile/i);
+  assert.match(verification, /query\.categories/i);
+  assert.match(verification, /query\.products/i);
+  assert.match(verification, /query\.shifts/i);
+  assert.match(verification, /query\.orders_queue_with_order_items/i);
+  assert.match(verification, /query\.tax_configuration/i);
+  assert.match(verification, /rpc\.employee_directory/i);
+  assert.match(verification, /metadata\.orders_to_order_items_fk/i);
+  assert.match(verification, /rollback;\s*$/i);
+  assert.doesNotMatch(verification, /\b(?:insert|update|delete)\s+into\s+public\./i);
 });

@@ -10,7 +10,7 @@ type PosEmployee = {
   active: boolean;
 };
 
-export async function getPosContext(route = "API request") {
+export async function getPosContext(route = "API request", requestId?: string) {
   const supabase = await createSupabaseServerClient();
   const unauthenticated = { supabase, user: null, employee: null };
   const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
@@ -29,7 +29,7 @@ export async function getPosContext(route = "API request") {
 
   const { data: profiles, error } = await supabase.rpc("current_employee_profile");
   if (error) {
-    logRpcFailure(route, "current_employee_profile", error);
+    logRpcFailure(route, "current_employee_profile", error, requestId);
     throw error;
   }
   return { supabase, user: userData.user, employee: profiles?.[0] ?? null };
