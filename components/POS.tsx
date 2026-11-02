@@ -2,13 +2,14 @@
 
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatTHB } from "@/lib/money";
-import { calculateCartTotals, filterPosProducts, sameActiveShift } from "@/lib/pos-catalog";
+import { calculateCartTotals, filterPosProducts, getDefaultProductCategoryId, sameActiveShift } from "@/lib/pos-catalog";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { PosData, PosOrder, PosProduct, PosReceipt } from "@/lib/pos-types";
 
 type Tab = "sale" | "history" | "reports";
-type Modal = "openShift" | "addProduct" | "closeShift" | "checkout" | "movement" | "cancel" | "refund" | null;
+type Modal = "openShift" | "addCategory" | "editCategory" | "addProduct" | "editProduct" | "manageCatalog" | "closeShift" | "checkout" | "movement" | "cancel" | "refund" | null;
 type CartLine = { product: PosProduct; quantity: number };
+type CatalogCategory = NonNullable<PosData["catalogManagement"]>["categories"][number];
 type ShiftPreview = {
   opening_cash_satang: number;
   cash_sales_satang: number;
@@ -17,6 +18,8 @@ type ShiftPreview = {
   cash_out_satang: number;
   expected_cash_satang: number;
   transfer_sales_satang: number;
+  bank_income_satang?: number;
+  bank_expenses_satang?: number;
   discount_satang: number;
   tax_satang: number;
   refunds_satang: number;
@@ -47,11 +50,24 @@ type ReportData = {
     discounts_satang: number;
     tax_satang: number;
     receipt_count: number;
+    cash_income_satang: number;
+    cash_expenses_satang: number;
+    bank_income_satang: number;
+    bank_expenses_satang: number;
   };
   by_product: ReportRow[];
   by_category: ReportRow[];
   by_employee: ReportRow[];
   by_payment_method: ReportRow[];
+  cash_movements: Array<{
+    id: string;
+    type: "in" | "out" | "refund";
+    channel: "cash" | "bank_transfer";
+    amount_satang: number;
+    reason: string;
+    created_at: string;
+  }>;
+  shift_closings: ShiftClosing[];
 };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -77,6 +93,13 @@ function toSatang(value: string) {
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
   return new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function dateInputValue(value: Date) {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function employeeName(order: PosOrder) {
@@ -165,11 +188,17 @@ export default function POS() {
   const [checkoutTotal, setCheckoutTotal] = useState(0);
   const [checkoutPending, setCheckoutPending] = useState(false);
   const [openingCash, setOpeningCash] = useState("");
+  const [categoryName, setCategoryName] = useState("");
+  const [categoryEmoji, setCategoryEmoji] = useState("");
+  const [categoryActive, setCategoryActive] = useState(true);
+  const [editingCategory, setEditingCategory] = useState<CatalogCategory | null>(null);
   const [productName, setProductName] = useState("");
   const [productEmoji, setProductEmoji] = useState("");
   const [productCategoryId, setProductCategoryId] = useState("");
   const [productPrice, setProductPrice] = useState("");
   const [productAvailable, setProductAvailable] = useState(true);
+  const [productActive, setProductActive] = useState(true);
+  const [editingProduct, setEditingProduct] = useState<PosProduct | null>(null);
   const [countedCash, setCountedCash] = useState("");
   const [closingNotes, setClosingNotes] = useState("");
   const [movementType, setMovementType] = useState<"in" | "out">("out");
@@ -186,12 +215,13 @@ export default function POS() {
   const [selectedOrder, setSelectedOrder] = useState<PosOrder | null>(null);
   const [actionReason, setActionReason] = useState("");
   const [refundAmount, setRefundAmount] = useState("");
+  const [refundChannel, setRefundChannel] = useState<"cash" | "bank_transfer">("cash");
   const [report, setReport] = useState<ReportData | null>(null);
   const [reportFrom, setReportFrom] = useState(() => {
     const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
+    return dateInputValue(new Date(now.getFullYear(), now.getMonth(), 1));
   });
-  const [reportTo, setReportTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const [reportTo, setReportTo] = useState(() => dateInputValue(new Date()));
   const [printedReceipt, setPrintedReceipt] = useState<PosReceipt | null>(null);
 
   const loadData = useCallback(async (showSpinner = false) => {
@@ -276,7 +306,9 @@ export default function POS() {
         from: new Date(`${reportFrom}T00:00:00`).toISOString(),
         to: new Date(`${reportTo}T23:59:59.999`).toISOString(),
       });
-      setReport(await api<ReportData>(`/api/reports?${params.toString()}`));
+      const result = await api<ReportData>(`/api/reports?${params.toString()}`);
+      setReport(result);
+      setShiftClosings(result.shift_closings);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "โหลดรายงานไม่สำเร็จ");
     }
@@ -299,6 +331,13 @@ export default function POS() {
     data?.taxConfiguration ?? { enabled: false, rate_bps: 0 },
   );
   const itemCount = cart.reduce((total, line) => total + line.quantity, 0);
+  const countedCashAmount = Number(countedCash);
+  const countedCashForPreview = countedCash.trim() && Number.isFinite(countedCashAmount)
+    ? Math.round(countedCashAmount * 100)
+    : null;
+  const closingVariancePreview = shiftPreview && countedCashForPreview !== null
+    ? countedCashForPreview - shiftPreview.expected_cash_satang
+    : null;
 
   function notify(message: string) {
     setToast(message);
@@ -429,7 +468,7 @@ export default function POS() {
     try {
       await postPosAction({
         action: "addProduct",
-        categoryId: productCategoryId || data?.categories[0]?.id,
+        categoryId: productCategoryId || getDefaultProductCategoryId(data?.catalogManagement?.categories ?? []),
         name: productName,
         emoji: productEmoji,
         priceSatang: toSatang(productPrice),
@@ -443,6 +482,76 @@ export default function POS() {
       notify("เพิ่มสินค้าและบันทึกลงฐานข้อมูลแล้ว");
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : "เพิ่มสินค้าไม่สำเร็จ");
+    } finally { setBusy(false); }
+  }
+
+  async function submitAddCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const result = await postPosAction<{ category: { already_exists?: boolean } }>({
+        action: "addCategory", name: categoryName, emoji: categoryEmoji,
+      });
+      setCategoryName("");
+      setCategoryEmoji("");
+      setModal(null);
+      notify(result.category.already_exists ? "หมวดหมู่นี้มีอยู่แล้ว" : "เพิ่มหมวดหมู่แล้ว");
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "เพิ่มหมวดหมู่ไม่สำเร็จ");
+    } finally { setBusy(false); }
+  }
+
+  function editCategory(category: CatalogCategory) {
+    setEditingCategory(category);
+    setCategoryName(category.name);
+    setCategoryEmoji(category.emoji ?? "");
+    setCategoryActive(category.active ?? true);
+    setModal("editCategory");
+  }
+
+  async function submitEditCategory(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingCategory) return;
+    setBusy(true);
+    try {
+      await postPosAction({
+        action: "updateCategory", categoryId: editingCategory.id, name: categoryName,
+        emoji: categoryEmoji, active: categoryActive,
+      });
+      setEditingCategory(null);
+      setModal(null);
+      notify("บันทึกหมวดหมู่แล้ว");
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "บันทึกหมวดหมู่ไม่สำเร็จ");
+    } finally { setBusy(false); }
+  }
+
+  function editProduct(product: PosProduct) {
+    setEditingProduct(product);
+    setProductName(product.name);
+    setProductEmoji(product.emoji ?? "");
+    setProductCategoryId(product.category_id);
+    setProductPrice((product.price_satang / 100).toFixed(2));
+    setProductAvailable(product.available);
+    setProductActive(product.active ?? true);
+    setModal("editProduct");
+  }
+
+  async function submitEditProduct(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingProduct) return;
+    setBusy(true);
+    try {
+      await postPosAction({
+        action: "updateProduct", productId: editingProduct.id, categoryId: productCategoryId,
+        name: productName, emoji: productEmoji, priceSatang: toSatang(productPrice),
+        available: productAvailable, active: productActive,
+      });
+      setEditingProduct(null);
+      setModal(null);
+      notify("บันทึกสินค้าแล้ว");
+    } catch (reason) {
+      notify(reason instanceof Error ? reason.message : "บันทึกสินค้าไม่สำเร็จ");
     } finally { setBusy(false); }
   }
 
@@ -491,6 +600,7 @@ export default function POS() {
       setSelectedOrder(result.order);
       setActionReason("");
       setRefundAmount("");
+      setRefundChannel(result.order.payment_method ?? "cash");
     } catch (reason) {
       notify(reason instanceof Error ? reason.message : "เปิดรายละเอียดออเดอร์ไม่สำเร็จ");
     }
@@ -521,7 +631,10 @@ export default function POS() {
     try {
       const payload = action === "cancel"
         ? { action, orderId: selectedOrder.id, reason: actionReason.trim() }
-        : { action, orderId: selectedOrder.id, amountSatang: toSatang(refundAmount), reason: actionReason.trim() };
+        : {
+          action, orderId: selectedOrder.id, amountSatang: toSatang(refundAmount),
+          channel: refundChannel, reason: actionReason.trim(),
+        };
       await api("/api/orders", { method: "POST", body: JSON.stringify(payload) });
       setSelectedOrder(null);
       setModal(null);
@@ -588,7 +701,8 @@ export default function POS() {
       {tab === "sale" && (
         <section className="grid min-h-0 gap-3 lg:h-[calc(100vh-108px)] lg:grid-cols-[1.13fr_1fr_.95fr]">
           <section className="flex min-h-[420px] flex-col rounded-2xl border border-[#dce2d9] bg-white p-4 shadow-sm lg:min-h-0">
-            <div className="mb-3 flex items-end justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-[#5b826c]">Menu</p><h2 className="text-xl font-extrabold">เลือกเมนู</h2></div><div className="flex items-center gap-2"><span className="text-xs text-stone-400">{visibleProducts.length} รายการ</span>{isManager && <button type="button" onClick={() => { setProductCategoryId(data.categories[0]?.id ?? ""); setModal("addProduct"); }} className="rounded-lg bg-[#245b44] px-3 py-2 text-xs font-bold text-white">+ เพิ่มสินค้า</button>}</div></div>
+            <div className="mb-3 flex items-end justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-[#5b826c]">Menu</p><h2 className="text-xl font-extrabold">เลือกเมนู</h2></div><div className="flex items-center gap-2"><span className="text-xs text-stone-400">{visibleProducts.length} รายการ</span>{isManager && <button type="button" onClick={() => { setProductCategoryId(getDefaultProductCategoryId(data.catalogManagement?.categories ?? [])); setModal("addProduct"); }} className="rounded-lg bg-[#245b44] px-3 py-2 text-xs font-bold text-white">+ เพิ่มสินค้า</button>}</div></div>
+            {isManager && <div className="mb-3 grid grid-cols-2 gap-2"><button type="button" onClick={() => setModal("addCategory")} className="rounded-lg border border-[#245b44] px-3 py-2 text-xs font-bold text-[#245b44]">+ เพิ่มหมวดหมู่</button><button type="button" onClick={() => setModal("manageCatalog")} className="rounded-lg border border-stone-300 px-3 py-2 text-xs font-bold text-stone-700">จัดการเมนู</button></div>}
             <label className="mb-3 flex items-center gap-2 rounded-xl border border-stone-200 bg-stone-50 px-3 py-2.5 text-stone-400"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} className="w-full bg-transparent text-sm text-stone-800 outline-none" placeholder="ค้นหาสินค้า..." /></label>
             <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
               <button onClick={() => setActiveCategory("all")} className={`shrink-0 rounded-xl px-3 py-2 text-sm font-bold ${activeCategory === "all" ? "bg-[#245b44] text-white" : "bg-stone-100 text-stone-600"}`}>ทั้งหมด</button>
@@ -663,42 +777,95 @@ export default function POS() {
               <div className="rounded-2xl bg-[#f4f7f2] p-4"><p className="text-xs text-stone-500">จำนวนออเดอร์ที่ชำระแล้ว</p><p className="mt-2 text-xl font-extrabold">{report.summary.order_count}</p></div>
               <Metric title="ส่วนลด" value={report.summary.discounts_satang} />
               <Metric title="ภาษี" value={report.summary.tax_satang} />
+              <Metric title="รายรับเงินสด (ไม่ใช่ยอดขาย)" value={report.summary.cash_income_satang} />
+              <Metric title="รายจ่ายเงินสด" value={report.summary.cash_expenses_satang} />
+              <Metric title="รายรับโอน (ไม่ใช่ยอดขาย)" value={report.summary.bank_income_satang} />
+              <Metric title="รายจ่ายโอน" value={report.summary.bank_expenses_satang} />
               <div className="rounded-2xl bg-[#f4f7f2] p-4"><p className="text-xs text-stone-500">ใบเสร็จ</p><p className="mt-2 text-xl font-extrabold">{report.summary.receipt_count}</p></div>
             </div>
+            <p className="mb-4 text-xs text-stone-500">เงินสดเปิดกะแสดงแยกในประวัติปิดกะ และไม่นับเป็นยอดขายหรือรายรับ</p>
             <div className="grid gap-4 xl:grid-cols-2">
               <ReportTable title="ยอดขายตามสินค้า" rows={report.by_product} />
               <ReportTable title="ยอดขายตามหมวดหมู่" rows={report.by_category} />
               <ReportTable title="ยอดขายตามพนักงาน" rows={report.by_employee} />
               <ReportTable title="ยอดขายตามช่องทาง" rows={report.by_payment_method} showNet />
             </div>
+            <div className="mt-6">
+              <h3 className="mb-2 text-lg font-bold">ประวัติเงินเข้า-ออกอื่น</h3>
+              <div className="overflow-auto rounded-xl border">
+                <table className="w-full min-w-[700px] text-left text-sm">
+                  <thead className="bg-stone-50 text-xs text-stone-500"><tr><th className="p-3">วันที่</th><th className="p-3">รายการ</th><th className="p-3">ช่องทาง</th><th className="p-3">เหตุผล</th><th className="p-3 text-right">จำนวนเงิน</th></tr></thead>
+                  <tbody>
+                    {report.cash_movements.map((movement) => <tr key={movement.id} className="border-t">
+                      <td className="p-3">{formatDate(movement.created_at)}</td>
+                      <td className="p-3">{movement.type === "in" ? "เงินเข้า" : movement.type === "out" ? "เงินออก" : "คืนเงิน"}</td>
+                      <td className="p-3">{movement.channel === "cash" ? "เงินสด" : "โอนเงิน"}</td>
+                      <td className="p-3">{movement.reason}</td>
+                      <td className="p-3 text-right">{formatTHB(movement.amount_satang)}</td>
+                    </tr>)}
+                    {!report.cash_movements.length && <tr><td colSpan={5} className="p-5 text-center text-stone-400">ไม่มีรายการในช่วงวันที่นี้</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </> : <p className="py-12 text-center text-stone-400">กำลังโหลดรายงาน...</p>}
           <div className="mt-6">
             <h3 className="mb-2 text-lg font-bold">ประวัติปิดกะ</h3>
-            <div className="overflow-auto rounded-xl border"><table className="w-full min-w-[700px] text-left text-sm"><thead className="bg-stone-50 text-xs text-stone-500"><tr><th className="p-3">เวลาปิด</th><th className="p-3">พนักงาน</th><th className="p-3">เงินสดคาดหมาย</th><th className="p-3">นับจริง</th><th className="p-3">ส่วนต่าง</th><th className="p-3">ยอดสุทธิ</th></tr></thead><tbody>{shiftClosings.map((closing) => <tr key={closing.id} className="border-t"><td className="p-3">{formatDate(closing.closed_at)}</td><td className="p-3">{Array.isArray(closing.employee) ? closing.employee[0]?.name : closing.employee?.name ?? "—"}</td><td className="p-3">{formatTHB(closing.expected_cash_satang)}</td><td className="p-3">{formatTHB(closing.counted_cash_satang)}</td><td className="p-3">{formatTHB(closing.variance_satang)}</td><td className="p-3">{formatTHB(closing.net_sales_satang)}</td></tr>)}{!shiftClosings.length && <tr><td colSpan={6} className="p-5 text-center text-stone-400">ยังไม่มีประวัติปิดกะ</td></tr>}</tbody></table></div>
+            <div className="overflow-auto rounded-xl border">
+              <table className="w-full min-w-[1550px] text-left text-sm">
+                <thead className="bg-stone-50 text-xs text-stone-500"><tr><th className="p-3">เวลาปิด</th><th className="p-3">พนักงาน</th><th className="p-3">เงินสดเปิดกะ</th><th className="p-3">ขายเงินสด</th><th className="p-3">ขายโอน</th><th className="p-3">คืนเงินสด</th><th className="p-3">รายรับเงินสดอื่น</th><th className="p-3">รายจ่ายเงินสด</th><th className="p-3">เงินสดคาดหมาย</th><th className="p-3">นับเงินจริง</th><th className="p-3">ส่วนต่าง</th><th className="p-3">ยอดขายสุทธิ</th></tr></thead>
+                <tbody>
+                  {shiftClosings.map((closing) => <tr key={closing.id} className="border-t">
+                    <td className="p-3">{formatDate(closing.closed_at)}</td>
+                    <td className="p-3">{Array.isArray(closing.employee) ? closing.employee[0]?.name : closing.employee?.name ?? "—"}</td>
+                    <td className="p-3">{formatTHB(closing.opening_cash_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.cash_sales_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.transfer_sales_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.cash_refunds_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.cash_in_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.cash_out_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.expected_cash_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.counted_cash_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.variance_satang)}</td>
+                    <td className="p-3">{formatTHB(closing.net_sales_satang)}</td>
+                  </tr>)}
+                  {!shiftClosings.length && <tr><td colSpan={12} className="p-5 text-center text-stone-400">ไม่มีประวัติปิดกะในช่วงวันที่นี้</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       )}
 
       {modal === "openShift" && <Dialog title="เปิดกะขาย" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitOpenShift(event)}><p className="mb-4 text-sm text-stone-600">ระบุเงินสดเริ่มต้นในลิ้นชัก ระบบจะบันทึกเพียงครั้งเดียวต่อกะ</p><label className="block text-sm font-semibold">เงินสดเริ่มต้น (บาท)<input required min="0" step="0.01" type="number" value={openingCash} onChange={(event) => setOpeningCash(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังเปิดกะ..." : "ยืนยันเปิดกะ"}</button></form></Dialog>}
 
-      {modal === "addProduct" && <Dialog title="เพิ่มสินค้าในเมนู" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitAddProduct(event)}><label className="mb-3 block text-sm font-semibold">ชื่อสินค้า<input required maxLength={120} value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="เช่น Basque Cheesecake" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><div className="mb-3 grid grid-cols-[96px_1fr] gap-3"><label className="text-sm font-semibold">อีโมจิ<input maxLength={16} value={productEmoji} onChange={(event) => setProductEmoji(event.target.value)} placeholder="🍰" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="text-sm font-semibold">หมวดหมู่<select required value={productCategoryId} onChange={(event) => setProductCategoryId(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3"><option value="">เลือกหมวดหมู่</option>{data.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div><label className="mb-3 block text-sm font-semibold">ราคา (บาท)<input required min="0.01" step="0.01" type="number" value={productPrice} onChange={(event) => setProductPrice(event.target.value)} placeholder="0.00" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={productAvailable} onChange={(event) => setProductAvailable(event.target.checked)} className="h-4 w-4 accent-[#245b44]" />พร้อมขายทันที</label><button disabled={busy || !data.categories.length} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึกสินค้า..." : data.categories.length ? "เพิ่มสินค้า" : "ยังไม่มีหมวดหมู่สินค้า"}</button></form></Dialog>}
+      {modal === "addCategory" && <Dialog title="เพิ่มหมวดหมู่" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitAddCategory(event)}><label className="mb-3 block text-sm font-semibold">ชื่อหมวดหมู่<input required maxLength={120} value={categoryName} onChange={(event) => setCategoryName(event.target.value)} placeholder="เช่น เครื่องดื่ม" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="block text-sm font-semibold">อีโมจิ<input maxLength={16} value={categoryEmoji} onChange={(event) => setCategoryEmoji(event.target.value)} placeholder="☕" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึก..." : "เพิ่มหมวดหมู่"}</button></form></Dialog>}
+
+      {modal === "manageCatalog" && <Dialog title="จัดการเมนูและหมวดหมู่" onClose={() => !busy && setModal(null)}><div className="max-h-[70vh] space-y-5 overflow-y-auto"><div className="flex items-center justify-between"><h3 className="font-bold">หมวดหมู่</h3><button type="button" onClick={() => { setCategoryName(""); setCategoryEmoji(""); setModal("addCategory"); }} className="rounded-lg bg-[#245b44] px-3 py-2 text-xs font-bold text-white">+ เพิ่มหมวดหมู่</button></div>{data.catalogManagement?.categories.map((category) => <div key={category.id} className="flex items-center justify-between gap-3 rounded-xl border p-3"><span>{category.emoji ?? "📁"} {category.name} {!category.active && <em className="ml-1 text-xs text-amber-700">ปิดใช้งาน</em>}</span><button type="button" onClick={() => editCategory(category)} className="rounded-lg border px-3 py-1.5 text-xs font-bold">แก้ไข</button></div>)}<h3 className="pt-2 font-bold">สินค้า</h3>{data.catalogManagement?.products.map((product) => <div key={product.id} className="flex items-center justify-between gap-3 rounded-xl border p-3"><span className="min-w-0 truncate">{product.emoji ?? "🍽️"} {product.name} {!product.active && <em className="ml-1 text-xs text-amber-700">ปิดใช้งาน</em>}{!product.available && <em className="ml-1 text-xs text-stone-500">ไม่พร้อมขาย</em>}</span><button type="button" onClick={() => editProduct(product)} className="shrink-0 rounded-lg border px-3 py-1.5 text-xs font-bold">แก้ไข</button></div>)}</div></Dialog>}
+
+      {modal === "editCategory" && editingCategory && <Dialog title="แก้ไขหมวดหมู่" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitEditCategory(event)}><label className="mb-3 block text-sm font-semibold">ชื่อหมวดหมู่<input required maxLength={120} value={categoryName} onChange={(event) => setCategoryName(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="block text-sm font-semibold">อีโมจิ<input maxLength={16} value={categoryEmoji} onChange={(event) => setCategoryEmoji(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={categoryActive} onChange={(event) => setCategoryActive(event.target.checked)} />เปิดใช้งานหมวดหมู่นี้</label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึก..." : "บันทึกหมวดหมู่"}</button></form></Dialog>}
+
+      {modal === "addProduct" && <Dialog title="เพิ่มสินค้าในเมนู" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitAddProduct(event)}><label className="mb-3 block text-sm font-semibold">ชื่อสินค้า<input required maxLength={120} value={productName} onChange={(event) => setProductName(event.target.value)} placeholder="เช่น Basque Cheesecake" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><div className="mb-3 grid grid-cols-[96px_1fr] gap-3"><label className="text-sm font-semibold">อีโมจิ<input maxLength={16} value={productEmoji} onChange={(event) => setProductEmoji(event.target.value)} placeholder="🍰" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="text-sm font-semibold">หมวดหมู่<select required value={productCategoryId} onChange={(event) => setProductCategoryId(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3"><option value="">เลือกหมวดหมู่</option>{data.catalogManagement?.categories.filter((category) => category.active).map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}</select></label></div><label className="mb-3 block text-sm font-semibold">ราคา (บาท)<input required min="0.01" step="0.01" type="number" value={productPrice} onChange={(event) => setProductPrice(event.target.value)} placeholder="0.00" className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={productAvailable} onChange={(event) => setProductAvailable(event.target.checked)} className="h-4 w-4 accent-[#245b44]" />พร้อมขายทันที</label><button disabled={busy || !data.catalogManagement?.categories.some((category) => category.active)} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึกสินค้า..." : data.catalogManagement?.categories.some((category) => category.active) ? "เพิ่มสินค้า" : "ยังไม่มีหมวดหมู่ที่เปิดใช้งาน"}</button></form></Dialog>}
+
+      {modal === "editProduct" && editingProduct && <Dialog title="แก้ไขสินค้า" onClose={() => !busy && setModal(null)}><form onSubmit={(event) => void submitEditProduct(event)}><label className="mb-3 block text-sm font-semibold">ชื่อสินค้า<input required maxLength={120} value={productName} onChange={(event) => setProductName(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><div className="mb-3 grid grid-cols-[96px_1fr] gap-3"><label className="text-sm font-semibold">อีโมจิ<input maxLength={16} value={productEmoji} onChange={(event) => setProductEmoji(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="text-sm font-semibold">หมวดหมู่<select required value={productCategoryId} onChange={(event) => setProductCategoryId(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3">{data.catalogManagement?.categories.map((category) => <option key={category.id} value={category.id}>{category.name}{category.active ? "" : " (ปิดใช้งาน)"}</option>)}</select></label></div><label className="mb-3 block text-sm font-semibold">ราคา (บาท)<input required min="0.01" step="0.01" type="number" value={productPrice} onChange={(event) => setProductPrice(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="mb-2 flex items-center gap-2 text-sm"><input type="checkbox" checked={productAvailable} onChange={(event) => setProductAvailable(event.target.checked)} />พร้อมขาย</label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={productActive} onChange={(event) => setProductActive(event.target.checked)} />เปิดใช้งานสินค้า</label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึก..." : "บันทึกสินค้า"}</button></form></Dialog>}
 
       {modal === "closeShift" && <Dialog title="ปิดกะและกระทบยอด" onClose={() => setModal(null)}><form onSubmit={(event) => void submitCloseShift(event)}><div className="mb-4 grid grid-cols-2 gap-2 text-sm">{[
         ["เงินสดเปิดกะ", shiftPreview?.opening_cash_satang], ["ขายเงินสด", shiftPreview?.cash_sales_satang],
-        ["คืนเงินสด", shiftPreview?.cash_refunds_satang], ["เงินสดเข้า", shiftPreview?.cash_in_satang],
-        ["เงินสดออก", shiftPreview?.cash_out_satang], ["เงินสดคาดหมาย", shiftPreview?.expected_cash_satang],
-        ["ยอดโอน", shiftPreview?.transfer_sales_satang], ["ส่วนลด", shiftPreview?.discount_satang],
+        ["คืนเงินสด", shiftPreview?.cash_refunds_satang], ["รายรับเงินสดอื่น", shiftPreview?.cash_in_satang],
+        ["รายจ่ายเงินสด", shiftPreview?.cash_out_satang], ["เงินสดคาดหมาย", shiftPreview?.expected_cash_satang],
+        ["ยอดขายโอน", shiftPreview?.transfer_sales_satang], ["รายรับโอนอื่น", shiftPreview?.bank_income_satang],
+        ["รายจ่ายโอน", shiftPreview?.bank_expenses_satang], ["ส่วนลด", shiftPreview?.discount_satang],
         ["ภาษี", shiftPreview?.tax_satang], ["คืนเงินรวม", shiftPreview?.refunds_satang],
         ["ยอดสุทธิ", shiftPreview?.net_sales_satang], ["จำนวนออเดอร์", shiftPreview?.order_count],
-      ].map(([label, value]) => <div key={label} className="rounded-xl bg-stone-50 p-3"><p className="text-xs text-stone-500">{label}</p><p className="mt-1 font-bold">{value === undefined ? "—" : label === "จำนวนออเดอร์" ? value : formatTHB(value as number)}</p></div>)}</div><label className="block text-sm font-semibold">เงินสดที่นับได้จริง (บาท)<input required min="0" step="0.01" type="number" value={countedCash} onChange={(event) => setCountedCash(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="mt-3 block text-sm font-semibold">หมายเหตุ (ไม่บังคับ)<textarea value={closingNotes} onChange={(event) => setClosingNotes(event.target.value)} maxLength={500} className="mt-1 w-full rounded-xl border px-3 py-2" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-stone-800 px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังปิดกะ..." : "บันทึกและปิดกะ"}</button></form></Dialog>}
+      ].map(([label, value]) => <div key={label} className="rounded-xl bg-stone-50 p-3"><p className="text-xs text-stone-500">{label}</p><p className="mt-1 font-bold">{value === undefined ? "—" : label === "จำนวนออเดอร์" ? value : formatTHB(value as number)}</p></div>)}</div><label className="block text-sm font-semibold">เงินสดที่นับได้จริง (บาท)<input required min="0" step="0.01" type="number" value={countedCash} onChange={(event) => setCountedCash(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label>{closingVariancePreview !== null && <p className={`mt-2 text-sm font-bold ${closingVariancePreview === 0 ? "text-emerald-700" : "text-amber-700"}`}>ส่วนต่างจากเงินสดคาดหมาย: {formatTHB(closingVariancePreview)}</p>}<label className="mt-3 block text-sm font-semibold">หมายเหตุ (ไม่บังคับ)<textarea value={closingNotes} onChange={(event) => setClosingNotes(event.target.value)} maxLength={500} className="mt-1 w-full rounded-xl border px-3 py-2" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-stone-800 px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังปิดกะ..." : "บันทึกและปิดกะ"}</button></form></Dialog>}
 
       {modal === "movement" && <Dialog title="บันทึกเงินเข้า-ออก" onClose={() => setModal(null)}><form onSubmit={(event) => void submitMovement(event)}><div className="grid grid-cols-2 gap-3"><label className="text-sm font-semibold">ประเภทรายการ<select value={movementType} onChange={(event) => setMovementType(event.target.value as "in" | "out")} className="mt-1 w-full rounded-xl border px-3 py-3"><option value="in">เงินเข้า</option><option value="out">เงินออก</option></select></label><label className="text-sm font-semibold">ช่องทาง<select value={movementChannel} onChange={(event) => setMovementChannel(event.target.value as "cash" | "bank_transfer")} className="mt-1 w-full rounded-xl border px-3 py-3"><option value="cash">เงินสด</option><option value="bank_transfer">โอนเงิน</option></select></label></div><label className="mt-3 block text-sm font-semibold">จำนวนเงิน (บาท)<input required min="0.01" step="0.01" type="number" value={movementAmount} onChange={(event) => setMovementAmount(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="mt-3 block text-sm font-semibold">เหตุผล / หมวดหมู่<input required minLength={2} maxLength={180} value={movementReason} onChange={(event) => setMovementReason(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">บันทึกรายการ</button></form></Dialog>}
 
-      {modal === "checkout" && <Dialog title="ชำระเงิน" onClose={() => !busy && setModal(null)}><div className="mb-4 flex items-center justify-between rounded-xl bg-[#f4f7f2] p-4"><span className="font-semibold">ยอดชำระ</span><strong className="text-2xl text-[#245b44]">{formatTHB(checkoutTotal)}</strong></div><div className="mb-4 grid grid-cols-2 gap-2"><button onClick={() => setPaymentMethod("cash")} className={`rounded-xl border p-3 font-bold ${paymentMethod === "cash" ? "border-[#245b44] bg-[#e8f2eb] text-[#245b44]" : "border-stone-200"}`}>เงินสด</button><button onClick={() => setPaymentMethod("bank_transfer")} className={`rounded-xl border p-3 font-bold ${paymentMethod === "bank_transfer" ? "border-[#245b44] bg-[#e8f2eb] text-[#245b44]" : "border-stone-200"}`}>โอนเงิน</button></div>{paymentMethod === "cash" ? <label className="block text-sm font-semibold">รับเงิน (บาท)<input required min={checkoutTotal / 100} step="0.01" type="number" value={received} onChange={(event) => setReceived(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /><p className="mt-2 text-sm text-stone-500">เงินทอน {formatTHB(Math.max(0, (Number(received || "0") * 100) - checkoutTotal))}</p></label> : <label className="block text-sm font-semibold">เลขอ้างอิง (ไม่บังคับ)<input value={transferReference} maxLength={120} onChange={(event) => setTransferReference(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label>}<button disabled={busy} onClick={() => void finishCheckout()} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึกการชำระ..." : "ยืนยันการชำระเงิน"}</button></Dialog>}
+      {modal === "checkout" && <Dialog title="ชำระเงิน" onClose={() => !busy && setModal(null)}><div className="mb-4 flex items-center justify-between rounded-xl bg-[#f4f7f2] p-4"><span className="font-semibold">ยอดชำระ</span><strong className="text-2xl text-[#245b44]">{formatTHB(checkoutTotal)}</strong></div><div className="mb-4 grid grid-cols-2 gap-2"><button disabled={busy || checkoutPending} onClick={() => setPaymentMethod("cash")} className={`rounded-xl border p-3 font-bold ${paymentMethod === "cash" ? "border-[#245b44] bg-[#e8f2eb] text-[#245b44]" : "border-stone-200"}`}>เงินสด</button><button disabled={busy || checkoutPending} onClick={() => setPaymentMethod("bank_transfer")} className={`rounded-xl border p-3 font-bold ${paymentMethod === "bank_transfer" ? "border-[#245b44] bg-[#e8f2eb] text-[#245b44]" : "border-stone-200"}`}>โอนเงิน</button></div>{paymentMethod === "cash" ? <label className="block text-sm font-semibold">รับเงิน (บาท)<input disabled={busy || checkoutPending} required min={checkoutTotal / 100} step="0.01" type="number" value={received} onChange={(event) => setReceived(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /><p className="mt-2 text-sm text-stone-500">เงินทอน {formatTHB(Math.max(0, (Number(received || "0") * 100) - checkoutTotal))}</p></label> : <label className="block text-sm font-semibold">เลขอ้างอิง (ไม่บังคับ)<input disabled={busy || checkoutPending} value={transferReference} maxLength={120} onChange={(event) => setTransferReference(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label>}<button disabled={busy} onClick={() => void finishCheckout()} className="mt-5 w-full rounded-xl bg-[#245b44] px-4 py-3 font-bold text-white disabled:opacity-50">{busy ? "กำลังบันทึกการชำระ..." : "ยืนยันการชำระเงิน"}</button></Dialog>}
 
       {modal === "cancel" && selectedOrder && <Dialog title={`ยกเลิกออเดอร์ #${selectedOrder.order_no}`} onClose={() => setModal(null)}><p className="mb-3 text-sm text-stone-600">ยกเลิกได้เฉพาะออเดอร์ที่ยังไม่ชำระ รายการจะถูกเก็บไว้ในประวัติ</p><label className="block text-sm font-semibold">เหตุผล<input required minLength={2} maxLength={180} value={actionReason} onChange={(event) => setActionReason(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} onClick={() => void submitOrderAction("cancel")} className="mt-4 w-full rounded-xl bg-red-700 px-4 py-3 font-bold text-white">ยืนยันยกเลิกออเดอร์</button></Dialog>}
 
-      {modal === "refund" && selectedOrder && <Dialog title={`คืนเงินออเดอร์ #${selectedOrder.order_no}`} onClose={() => setModal(null)}><p className="mb-3 text-sm text-stone-600">คืนเงินได้ไม่เกินยอดชำระคงเหลือ และต้องระบุเหตุผล</p><label className="block text-sm font-semibold">จำนวนเงิน (บาท)<input required min="0.01" step="0.01" type="number" value={refundAmount} onChange={(event) => setRefundAmount(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="mt-3 block text-sm font-semibold">เหตุผล<input required minLength={2} maxLength={180} value={actionReason} onChange={(event) => setActionReason(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} onClick={() => void submitOrderAction("refund")} className="mt-4 w-full rounded-xl bg-red-700 px-4 py-3 font-bold text-white">บันทึกการคืนเงิน</button></Dialog>}
+      {modal === "refund" && selectedOrder && <Dialog title={`คืนเงินออเดอร์ #${selectedOrder.order_no}`} onClose={() => setModal(null)}><p className="mb-3 text-sm text-stone-600">คืนเงินได้ไม่เกินยอดชำระคงเหลือ ระบุช่องทางที่คืนเงินจริงและเหตุผล</p><label className="block text-sm font-semibold">จำนวนเงิน (บาท)<input required min="0.01" step="0.01" type="number" value={refundAmount} onChange={(event) => setRefundAmount(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><label className="mt-3 block text-sm font-semibold">ช่องทางคืนเงิน<select value={refundChannel} onChange={(event) => setRefundChannel(event.target.value as "cash" | "bank_transfer")} className="mt-1 w-full rounded-xl border px-3 py-3"><option value="cash">เงินสด</option><option value="bank_transfer">โอนเงิน</option></select></label><label className="mt-3 block text-sm font-semibold">เหตุผล<input required minLength={2} maxLength={180} value={actionReason} onChange={(event) => setActionReason(event.target.value)} className="mt-1 w-full rounded-xl border px-3 py-3" /></label><button disabled={busy} onClick={() => void submitOrderAction("refund")} className="mt-4 w-full rounded-xl bg-red-700 px-4 py-3 font-bold text-white">บันทึกการคืนเงิน</button></Dialog>}
 
       {selectedOrder && modal !== "cancel" && modal !== "refund" && <Dialog title={`ออเดอร์ #${selectedOrder.order_no}`} onClose={() => setSelectedOrder(null)}><div className="max-h-[70vh] overflow-y-auto pr-1"><div className="mb-3 grid grid-cols-2 gap-2 text-sm"><div><span className="text-stone-500">วันที่:</span> {formatDate(selectedOrder.created_at)}</div><div><span className="text-stone-500">พนักงาน:</span> {employeeName(selectedOrder)}</div><div><span className="text-stone-500">สถานะ:</span> {selectedOrder.status}</div><div><span className="text-stone-500">ช่องทาง:</span> {selectedOrder.payment_method ?? "—"}</div></div><div className="divide-y rounded-xl border">{selectedOrder.order_items.map((line) => <div key={line.id} className="flex justify-between gap-3 p-3 text-sm"><span>{line.name_snapshot} × {line.quantity}</span><strong>{formatTHB(line.line_total_satang)}</strong></div>)}</div><div className="mt-3 space-y-1 text-sm"><TotalLine label="ยอดสินค้า" value={selectedOrder.subtotal_satang} /><TotalLine label="ส่วนลด" value={-selectedOrder.discount_satang} /><TotalLine label="ภาษี" value={selectedOrder.tax_satang} /><TotalLine label="ยอดรวม" value={selectedOrder.total_satang} bold /></div><h3 className="mb-2 mt-5 font-bold">ประวัติชำระเงิน</h3>{selectedOrder.payments?.length ? selectedOrder.payments.map((payment) => <p key={payment.id} className="text-sm text-stone-600">{formatDate(payment.created_at)} · {payment.method} · {formatTHB(payment.amount_satang)}{payment.reference ? ` · ${payment.reference}` : ""}</p>) : <p className="text-sm text-stone-400">ยังไม่มีการชำระเงิน</p>}<h3 className="mb-2 mt-4 font-bold">ประวัติคืนเงิน</h3>{selectedOrder.refunds?.length ? selectedOrder.refunds.map((refund) => <p key={refund.id} className="text-sm text-stone-600">{formatDate(refund.created_at)} · {refund.channel} · {formatTHB(refund.amount_satang)} · {refund.reason}</p>) : <p className="text-sm text-stone-400">ไม่มีรายการคืนเงิน</p>}{selectedOrder.receipts?.[0] && <button onClick={() => { setPrintedReceipt(selectedOrder.receipts?.[0] ?? null); window.setTimeout(() => window.print(), 50); }} className="mt-4 w-full rounded-xl border border-[#245b44] px-4 py-2.5 font-bold text-[#245b44]">ดู / พิมพ์ใบเสร็จ #{selectedOrder.receipts[0].receipt_no}</button>}<div className="mt-4 grid gap-2 sm:grid-cols-2">{selectedOrder.status === "open" && <><button onClick={() => reopenOrder(selectedOrder)} className="rounded-xl bg-[#245b44] px-3 py-2.5 text-sm font-bold text-white">แก้ไขออเดอร์ที่ยังไม่ชำระ</button><button onClick={() => { setModal("cancel"); setActionReason(""); }} className="rounded-xl bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700">ยกเลิกออเดอร์</button></>}{isManager && ["preparing", "completed"].includes(selectedOrder.status) && <button onClick={() => { setModal("refund"); const refunded = selectedOrder.refunds?.reduce((total, item) => total + item.amount_satang, 0) ?? 0; setRefundAmount((Math.max(0, selectedOrder.total_satang - refunded) / 100).toFixed(2)); setActionReason(""); }} className="rounded-xl bg-red-50 px-3 py-2.5 text-sm font-bold text-red-700">คืนเงิน</button>}</div></div></Dialog>}
 

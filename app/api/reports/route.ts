@@ -1,6 +1,7 @@
 import { apiFailure, logRpcFailure } from "@/lib/api-errors";
 import { getPosContext, isEmployee } from "@/lib/pos-server";
-import { calculateNetSales } from "@/lib/financial";
+import { calculateMovementTotals, calculateNetSales, calculateRefundTotalsByPaymentMethod } from "@/lib/financial";
+import { fetchAllPages } from "@/lib/supabase-pagination";
 
 export const dynamic = "force-dynamic";
 
@@ -23,29 +24,43 @@ export async function GET(request: Request) {
     const params = new URL(request.url).searchParams;
     const from = params.get("from");
     const to = params.get("to");
-    const start = from && !Number.isNaN(Date.parse(from)) ? new Date(from).toISOString() : new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-    const end = to && !Number.isNaN(Date.parse(to)) ? new Date(to).toISOString() : new Date().toISOString();
-    const [{ data: orders, error: ordersError }, { data: refunds, error: refundsError }, { data: receipts, error: receiptsError }] = await Promise.all([
-      supabase.from("orders")
-        .select("id, order_no, subtotal_satang, discount_satang, tax_satang, total_satang, created_by, payment_method, paid_at, order_items(name_snapshot, category_name_snapshot, quantity, line_total_satang), payments(method, amount_satang)")
-        .gte("paid_at", start).lte("paid_at", end).not("paid_at", "is", null).order("paid_at", { ascending: false }),
-      supabase.from("refunds").select("channel, amount_satang, created_at")
-        .gte("created_at", start).lte("created_at", end),
-      supabase.from("receipts").select("id, receipt_no, order_id, created_at")
-        .gte("created_at", start).lte("created_at", end),
+    const fromDate = from ? new Date(from) : null;
+    const toDate = to ? new Date(to) : null;
+    if ((from && (!fromDate || Number.isNaN(fromDate.getTime()))) ||
+      (to && (!toDate || Number.isNaN(toDate.getTime())))) {
+      return Response.json({ error: "ช่วงวันที่รายงานไม่ถูกต้อง" }, { status: 400 });
+    }
+    const start = (fromDate ?? new Date(new Date().getFullYear(), new Date().getMonth(), 1)).toISOString();
+    const end = (toDate ?? new Date()).toISOString();
+    if (start > end) return Response.json({ error: "วันที่เริ่มต้นต้องไม่อยู่หลังวันที่สิ้นสุด" }, { status: 400 });
+    const [orders, refundsInPeriod, receipts, movements, closings] = await Promise.all([
+      fetchAllPages((pageFrom, pageTo) => supabase.from("orders")
+        .select("id, order_no, status, subtotal_satang, discount_satang, tax_satang, total_satang, created_by, payment_method, paid_at, order_items(name_snapshot, category_name_snapshot, quantity, line_total_satang), payments(method, amount_satang)")
+        .gte("paid_at", start).lte("paid_at", end).in("status", ["preparing", "completed"]).not("paid_at", "is", null)
+        .order("paid_at", { ascending: true }).order("id", { ascending: true }).range(pageFrom, pageTo)),
+      fetchAllPages((pageFrom, pageTo) => supabase.from("refunds")
+        .select("channel, sale_payment_method, amount_satang, created_at")
+        .gte("created_at", start).lte("created_at", end)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(pageFrom, pageTo)),
+      fetchAllPages((pageFrom, pageTo) => supabase.from("receipts").select("id, receipt_no, order_id, created_at")
+        .gte("created_at", start).lte("created_at", end)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(pageFrom, pageTo)),
+      fetchAllPages((pageFrom, pageTo) => supabase.from("cash_movements")
+        .select("id, type, channel, amount_satang, reason, created_at")
+        .gte("created_at", start).lte("created_at", end)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(pageFrom, pageTo)),
+      fetchAllPages((pageFrom, pageTo) => supabase.from("shift_closings").select("*")
+        .gte("closed_at", start).lte("closed_at", end)
+        .order("closed_at", { ascending: true }).order("id", { ascending: true }).range(pageFrom, pageTo)),
     ]);
-    if (ordersError) throw ordersError;
-    if (refundsError) throw refundsError;
-    if (receiptsError) throw receiptsError;
 
-    const paidOrders = orders ?? [];
+    const paidOrders = orders.filter((order) => order.payments?.length);
     const { data: employees, error: employeesError } = await supabase.rpc("employee_directory");
     if (employeesError) {
       logRpcFailure("api/reports GET", "employee_directory", employeesError);
       throw employeesError;
     }
     const employeeNames = new Map<string, string>((employees ?? []).map((item: { id: string; name: string }) => [item.id, item.name]));
-    const refundsInPeriod = refunds ?? [];
     const paymentTotals = new Map<string, TotalRow>();
     const productTotals = new Map<string, TotalRow>();
     const categoryTotals = new Map<string, TotalRow>();
@@ -63,8 +78,8 @@ export async function GET(request: Request) {
     const refundAmounts = refundsInPeriod.map((refund) => refund.amount_satang);
     const grossSales = paidAmounts.reduce((total, amount) => total + amount, 0);
     const totalRefunds = refundAmounts.reduce((total, amount) => total + amount, 0);
-    const cashRefunds = refundsInPeriod.filter((refund) => refund.channel === "cash").reduce((total, refund) => total + refund.amount_satang, 0);
-    const transferRefunds = refundsInPeriod.filter((refund) => refund.channel === "bank_transfer").reduce((total, refund) => total + refund.amount_satang, 0);
+    const refundsByPaymentMethod = calculateRefundTotalsByPaymentMethod(refundsInPeriod);
+    const movementTotals = calculateMovementTotals(movements);
 
     return Response.json({
       range: { from: start, to: end },
@@ -75,14 +90,23 @@ export async function GET(request: Request) {
         net_sales_satang: calculateNetSales(paidAmounts, refundAmounts),
         discounts_satang: paidOrders.reduce((total, order) => total + order.discount_satang, 0),
         tax_satang: paidOrders.reduce((total, order) => total + order.tax_satang, 0),
-        receipt_count: receipts?.length ?? 0,
+        receipt_count: receipts.length,
+        cash_income_satang: movementTotals.cashIncome,
+        cash_expenses_satang: movementTotals.cashExpenses,
+        bank_income_satang: movementTotals.bankIncome,
+        bank_expenses_satang: movementTotals.bankExpenses,
       },
+      cash_movements: movements,
+      shift_closings: closings.map((closing) => ({
+        ...closing,
+        employee: { name: employeeNames.get(String(closing.closed_by)) ?? "—" },
+      })),
       by_product: [...productTotals.values()].sort((a, b) => b.total_satang - a.total_satang),
       by_category: [...categoryTotals.values()].sort((a, b) => b.total_satang - a.total_satang),
       by_employee: [...employeeTotals.values()].sort((a, b) => b.total_satang - a.total_satang),
       by_payment_method: ["cash", "bank_transfer"].map((method) => {
         const total = paymentTotals.get(method)?.total_satang ?? 0;
-        const refunded = method === "cash" ? cashRefunds : transferRefunds;
+        const refunded = method === "cash" ? refundsByPaymentMethod.cash : refundsByPaymentMethod.bankTransfer;
         return { name: method, total_satang: total, refunds_satang: refunded, net_satang: total - refunded };
       }),
     });

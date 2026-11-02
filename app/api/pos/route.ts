@@ -1,5 +1,6 @@
 import { apiFailure, logQueryFailure, logRpcFailure, withRequestId } from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
+import { buildPosCatalog } from "@/lib/pos-catalog";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
 import { resolveTaxConfiguration } from "@/lib/tax-configuration";
 
@@ -13,8 +14,8 @@ export async function GET() {
     if (!isEmployee(user, employee)) return withRequestId(Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 }), requestId);
 
     const [categoriesResult, productsResult, shiftResult, queueResult, taxResult] = await Promise.all([
-      supabase.from("categories").select("id, name, emoji, sort_order").eq("active", true).order("sort_order"),
-      supabase.from("products").select("id, name, emoji, category_id, price_satang, available, sort_order").eq("active", true).order("sort_order"),
+      supabase.from("categories").select("id, name, emoji, sort_order, active").order("sort_order"),
+      supabase.from("products").select("id, name, emoji, category_id, price_satang, available, sort_order, active").order("sort_order"),
       supabase.from("shifts").select("id, register_id, opening_cash_satang, opened_at, opened_by").eq("register_id", POS_REGISTER_ID).eq("status", "open").maybeSingle(),
       supabase.from("orders").select("id, order_no, total_satang, status, paid_at, created_at, payment_method, order_items(id, name_snapshot, emoji_snapshot, unit_price_satang, quantity, line_total_satang)")
         .eq("status", "preparing").order("paid_at", { ascending: true }).limit(60),
@@ -40,10 +41,8 @@ export async function GET() {
       logRpcFailure("api/pos GET", "employee_directory", employeesResult.error, requestId);
       return withRequestId(apiFailure(employeesResult.error, "api/pos GET: employee_directory", requestId), requestId);
     }
-    const categories = (categoriesResult.data ?? []).map((category) => ({
-      ...category,
-      products: (productsResult.data ?? []).filter((product) => product.category_id === category.id),
-    }));
+    const allCategories = categoriesResult.data ?? [];
+    const categories = buildPosCatalog(allCategories, productsResult.data ?? []);
 
     return withRequestId(Response.json({
       employee,
@@ -52,6 +51,9 @@ export async function GET() {
       taxConfiguration,
       queue: queueResult.data ?? [],
       employees: employeesResult.data ?? [],
+      catalogManagement: employee.role === "owner" || employee.role === "manager"
+        ? { categories: allCategories.map(({ id, name, emoji, sort_order, active }) => ({ id, name, emoji, sort_order, active })), products: productsResult.data ?? [] }
+        : undefined,
     }), requestId);
   } catch (error) {
     return withRequestId(apiFailure(error, "api/pos GET", requestId), requestId);
@@ -79,6 +81,26 @@ export async function POST(request: Request) {
       return Response.json({ error: "คำขอไม่ถูกต้อง" }, { status: 400 });
     }
     const input = body as Record<string, unknown>;
+
+    if (input.action === "addCategory") {
+      if (employee.role !== "owner" && employee.role !== "manager") {
+        return Response.json({ error: "เฉพาะเจ้าของหรือผู้จัดการเท่านั้นที่เพิ่มหมวดหมู่ได้" }, { status: 403 });
+      }
+      if (typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 120 ||
+        (input.emoji !== undefined && input.emoji !== null &&
+          (typeof input.emoji !== "string" || input.emoji.length > 16))) {
+        return Response.json({ error: "กรุณากรอกชื่อและอีโมจิหมวดหมู่ให้ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("add_pos_category", {
+        p_name: input.name.trim(),
+        p_emoji: typeof input.emoji === "string" ? input.emoji.trim() || null : null,
+      });
+      if (error) {
+        logRpcFailure("api/pos POST", "add_pos_category", error);
+        throw error;
+      }
+      return Response.json({ category: data });
+    }
 
     if (input.action === "openShift") {
       if (!validSatang(input.openingCashSatang, true)) return Response.json({ error: "ยอดเงินเปิดกะไม่ถูกต้อง" }, { status: 400 });
@@ -114,6 +136,48 @@ export async function POST(request: Request) {
       });
       if (error) {
         logRpcFailure("api/pos POST", "add_pos_product", error);
+        throw error;
+      }
+      return Response.json({ product: data });
+    }
+
+    if (input.action === "updateCategory") {
+      if (employee.role !== "owner" && employee.role !== "manager") {
+        return Response.json({ error: "เฉพาะเจ้าของหรือผู้จัดการเท่านั้นที่จัดการหมวดหมู่ได้" }, { status: 403 });
+      }
+      if (!validUuid(input.categoryId) || typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 120 ||
+        (input.emoji !== undefined && input.emoji !== null && (typeof input.emoji !== "string" || input.emoji.length > 16)) ||
+        typeof input.active !== "boolean") {
+        return Response.json({ error: "ข้อมูลหมวดหมู่ไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("update_pos_category", {
+        p_category_id: input.categoryId, p_name: input.name.trim(),
+        p_emoji: typeof input.emoji === "string" ? input.emoji.trim() || null : null, p_active: input.active,
+      });
+      if (error) {
+        logRpcFailure("api/pos POST", "update_pos_category", error);
+        throw error;
+      }
+      return Response.json({ category: data });
+    }
+
+    if (input.action === "updateProduct") {
+      if (employee.role !== "owner" && employee.role !== "manager") {
+        return Response.json({ error: "เฉพาะเจ้าของหรือผู้จัดการเท่านั้นที่จัดการสินค้าได้" }, { status: 403 });
+      }
+      if (!validUuid(input.productId) || !validUuid(input.categoryId) || typeof input.name !== "string" || !input.name.trim() || input.name.trim().length > 120 ||
+        !validSatang(input.priceSatang) || input.priceSatang > 2_147_483_647 ||
+        (input.emoji !== undefined && input.emoji !== null && (typeof input.emoji !== "string" || input.emoji.length > 16)) ||
+        typeof input.available !== "boolean" || typeof input.active !== "boolean") {
+        return Response.json({ error: "ข้อมูลสินค้าไม่ถูกต้อง" }, { status: 400 });
+      }
+      const { data, error } = await supabase.rpc("update_pos_product", {
+        p_product_id: input.productId, p_category_id: input.categoryId, p_name: input.name.trim(),
+        p_emoji: typeof input.emoji === "string" ? input.emoji.trim() || null : null,
+        p_price_satang: input.priceSatang, p_available: input.available, p_active: input.active,
+      });
+      if (error) {
+        logRpcFailure("api/pos POST", "update_pos_product", error);
         throw error;
       }
       return Response.json({ product: data });

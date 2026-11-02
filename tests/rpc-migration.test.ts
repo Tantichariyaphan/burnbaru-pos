@@ -6,6 +6,10 @@ const migrationPath = new URL("../supabase/migrations/0004_repair_employee_rpc_f
 const shiftCatalogMigrationPath = new URL("../supabase/migrations/0005_idempotent_shifts_and_product_catalog.sql", import.meta.url);
 const consistencyMigrationPath = new URL("../supabase/migrations/0006_pos_consistency_and_idempotency.sql", import.meta.url);
 const authenticatedPosVerificationPath = new URL("../supabase/verify_authenticated_pos.sql", import.meta.url);
+const categoryManagementMigrationPath = new URL("../supabase/migrations/0007_category_management.sql", import.meta.url);
+const catalogManagementMigrationPath = new URL("../supabase/migrations/0008_catalog_management.sql", import.meta.url);
+const financialIntegrityMigrationPath = new URL("../supabase/migrations/0009_pos_financial_integrity.sql", import.meta.url);
+const reportsRoutePath = new URL("../app/api/reports/route.ts", import.meta.url);
 
 test("employee RPC repair migration restores the data-backed authenticated functions", async () => {
   const migration = await readFile(migrationPath, "utf8");
@@ -67,4 +71,50 @@ test("authenticated POS verification keeps the production read-path probes read-
   assert.match(verification, /metadata\.orders_to_order_items_fk/i);
   assert.match(verification, /rollback;\s*$/i);
   assert.doesNotMatch(verification, /\b(?:insert|update|delete)\s+into\s+public\./i);
+});
+
+test("category creation is manager-scoped, validated, and does not duplicate active categories", async () => {
+  const migration = await readFile(categoryManagementMigrationPath, "utf8");
+  assert.match(migration, /create or replace function public\.add_pos_category\(/i);
+  assert.match(migration, /current_employee_role\(\) not in \('owner', 'manager'\)/i);
+  assert.match(migration, /lower\(trim\(name\)\) = lower\(v_name\)/i);
+  assert.match(migration, /pg_advisory_xact_lock/i);
+  assert.match(migration, /grant execute on function public\.add_pos_category\(text, text\) to authenticated/i);
+  assert.doesNotMatch(migration, /grant execute on function .*add_pos_category.* to anon/i);
+});
+
+test("catalog management preserves history and only grants owner/manager RPCs to authenticated users", async () => {
+  const migration = await readFile(catalogManagementMigrationPath, "utf8");
+  assert.match(migration, /create or replace function public\.update_pos_category\(/i);
+  assert.match(migration, /create or replace function public\.update_pos_product\(/i);
+  assert.match(migration, /current_employee_role\(\) not in \('owner', 'manager'\)/i);
+  assert.match(migration, /insert into public\.audit_logs/i);
+  assert.match(migration, /grant execute on function public\.update_pos_category\(uuid, text, text, boolean\) to authenticated/i);
+  assert.match(migration, /grant execute on function public\.update_pos_product\(uuid, uuid, text, text, integer, boolean, boolean\) to authenticated/i);
+  assert.doesNotMatch(migration, /grant execute on function .*update_pos_(?:category|product).* to anon/i);
+  assert.doesNotMatch(migration, /\b(?:delete|truncate|drop)\s+(?:table|from)\b/i);
+});
+
+test("financial integrity migration requires tax configuration and records the actual refund channel", async () => {
+  const migration = await readFile(financialIntegrityMigrationPath, "utf8");
+  assert.match(migration, /alter table public\.refunds\s+add column if not exists sale_payment_method public\.payment_method/i);
+  assert.match(migration, /create or replace function public\.create_order\(/i);
+  assert.match(migration, /create or replace function public\.update_open_order\(/i);
+  assert.equal((migration.match(/if not found then raise exception 'Tax configuration is missing'; end if;/gi) ?? []).length, 2);
+  assert.match(migration, /create or replace function public\.refund_order\([\s\S]*?p_channel public\.pay_channel/i);
+  assert.match(migration, /insert into public\.refunds\(\s*order_id, shift_id, employee_id, channel, sale_payment_method, amount_satang, reason\s*\)\s*values\s*\(\s*p_order_id, v_shift_id, v_employee_id, p_channel, v_sale_payment_method/i);
+  assert.match(migration, /revoke all on function public\.refund_order\(uuid, integer, text\) from public, anon, authenticated/i);
+  assert.match(migration, /grant execute on function public\.refund_order\(uuid, integer, public\.pay_channel, text\) to authenticated/i);
+  assert.match(migration, /alter function public\.close_shift\(uuid, integer, text\)\s*set search_path = pg_catalog, public, pg_temp/i);
+});
+
+test("reports use paid transactions and return date-bounded cash history and shift reconciliations", async () => {
+  const route = await readFile(reportsRoutePath, "utf8");
+  assert.match(route, /\.in\("status", \["preparing", "completed"\]\)/);
+  assert.match(route, /\.gte\("paid_at", start\)\.lte\("paid_at", end\)/);
+  assert.match(route, /\.gte\("created_at", start\)\.lte\("created_at", end\)/);
+  assert.match(route, /\.gte\("closed_at", start\)\.lte\("closed_at", end\)/);
+  assert.match(route, /cash_movements: movements/);
+  assert.match(route, /fetchAllPages/);
+  assert.match(route, /shift_closings:/);
 });

@@ -6,6 +6,7 @@ export type PosProduct = {
   available: boolean;
   category_id: string;
   sort_order: number;
+  active?: boolean;
 };
 
 export type PosCategory = {
@@ -13,6 +14,7 @@ export type PosCategory = {
   name: string;
   emoji: string | null;
   products: PosProduct[];
+  active?: boolean;
 };
 
 export type PosOrderItem = {
@@ -57,6 +59,7 @@ export type PosPayment = {
 export type PosRefund = {
   id: string;
   channel: "cash" | "bank_transfer";
+  sale_payment_method?: "cash" | "bank_transfer" | null;
   amount_satang: number;
   reason: string;
   created_at: string;
@@ -101,4 +104,8 @@ export type PosData = {
   taxConfiguration: { enabled: boolean; rate_bps: number };
   queue: PosOrder[];
   employees?: Array<{ id: string; name: string }>;
+  catalogManagement?: {
+    categories: Array<Omit<PosCategory, "products">>;
+    products: PosProduct[];
+  };
 };

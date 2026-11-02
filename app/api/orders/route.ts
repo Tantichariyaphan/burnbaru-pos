@@ -85,11 +85,13 @@ export async function POST(request: Request) {
     }
     if (input.action === "refund") {
       if (!validUuid(input.orderId) || !validSatang(input.amountSatang) ||
+        (input.channel !== "cash" && input.channel !== "bank_transfer") ||
         typeof input.reason !== "string" || input.reason.trim().length < 2) {
-        return Response.json({ error: "กรุณาระบุออเดอร์ จำนวนเงิน และเหตุผลการคืนเงิน" }, { status: 400 });
+        return Response.json({ error: "กรุณาระบุออเดอร์ จำนวนเงิน ช่องทาง และเหตุผลการคืนเงิน" }, { status: 400 });
       }
       const { data, error } = await supabase.rpc("refund_order", {
         p_order_id: input.orderId, p_amount_satang: input.amountSatang,
+        p_channel: input.channel,
         p_reason: input.reason.trim().slice(0, 180),
       });
       if (error) {

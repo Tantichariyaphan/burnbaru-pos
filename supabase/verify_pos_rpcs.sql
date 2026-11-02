@@ -3,7 +3,10 @@ with expected(signature) as (
     ('public.current_employee_profile()'),
     ('public.employee_directory()'),
     ('public.open_shift(integer, text)'),
+    ('public.add_pos_category(text, text)'),
     ('public.add_pos_product(uuid, text, text, integer, boolean)'),
+    ('public.update_pos_category(uuid, text, text, boolean)'),
+    ('public.update_pos_product(uuid, uuid, text, text, integer, boolean, boolean)'),
     ('public.create_order(jsonb, integer, uuid)'),
     ('public.update_open_order(uuid, jsonb, integer)'),
     ('public.checkout_order(uuid, public.payment_method, integer, text, uuid)'),
@@ -11,6 +14,7 @@ with expected(signature) as (
     ('public.mark_order_done(uuid)'),
     ('public.cancel_open_order(uuid, text)'),
     ('public.refund_order(uuid, integer, text)'),
+    ('public.refund_order(uuid, integer, public.pay_channel, text)'),
     ('public.close_shift(uuid, integer, text)')
 )
 select

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { calculateCartTotals, filterPosProducts, sameActiveShift } from "../lib/pos-catalog.ts";
+import { buildPosCatalog, calculateCartTotals, filterPosProducts, getDefaultProductCategoryId, sameActiveShift } from "../lib/pos-catalog.ts";
 import type { PosProduct } from "../lib/pos-types.ts";
 
 const products: PosProduct[] = [
@@ -33,4 +33,26 @@ test("POS and shift summaries must refer to the same database shift", () => {
   assert.equal(sameActiveShift(null, null), true);
   assert.equal(sameActiveShift({ id: "shift-1" }, null), false);
   assert.equal(sameActiveShift({ id: "shift-1" }, { id: "shift-2" }), false);
+});
+
+test("an active product remains visible in a fallback group when its category is inactive", () => {
+  const catalog = buildPosCatalog([
+    { id: "cakes", name: "Cakes", emoji: null, sort_order: 0, active: true },
+    { id: "disabled", name: "Disabled", emoji: null, sort_order: 1, active: false },
+  ], [
+    { ...products[0], active: true },
+    { ...products[1], category_id: "disabled", active: true },
+    { ...products[2], active: false },
+  ]);
+  assert.deepEqual(catalog.map((category) => category.id), ["active", "uncategorized"]);
+  assert.deepEqual(catalog[1].products.map((product) => product.id), ["tea-1"]);
+  assert.equal(catalog[1].products[0].category_id, "uncategorized");
+});
+
+test("new products default to an active database category instead of a display group ID", () => {
+  assert.equal(getDefaultProductCategoryId([
+    { id: "inactive-category", active: false },
+    { id: "active-category", active: true },
+  ]), "active-category");
+  assert.equal(getDefaultProductCategoryId([]), "");
 });

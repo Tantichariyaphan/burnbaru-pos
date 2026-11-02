@@ -9,5 +9,6 @@ export type TaxConfiguration = {
 export function resolveTaxConfiguration(
   configuration: TaxConfiguration | null,
 ): TaxConfiguration {
-  return configuration ?? { enabled: false, rate_bps: 0 };
+  if (!configuration) throw new Error("Tax configuration is missing");
+  return configuration;
 }

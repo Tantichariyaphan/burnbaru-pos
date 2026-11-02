@@ -1,13 +1,10 @@
 import { apiFailure, logRpcFailure, withRequestId } from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee } from "@/lib/pos-server";
-import { calculateExpectedCash } from "@/lib/financial";
+import { calculateShiftReconciliation } from "@/lib/financial";
+import { fetchAllPages } from "@/lib/supabase-pagination";
 
 export const dynamic = "force-dynamic";
-
-function sum(rows: Array<{ amount_satang: number }>) {
-  return rows.reduce((total, row) => total + row.amount_satang, 0);
-}
 
 export async function GET() {
   const requestId = crypto.randomUUID();
@@ -36,45 +33,44 @@ export async function GET() {
     }));
     if (!activeShift) return withRequestId(Response.json({ activeShift: null, preview: null, closings: closingsWithNames }), requestId);
 
-    const [paymentsResult, refundsResult, movementsResult, ordersResult] = await Promise.all([
-      supabase.from("payments").select("method, amount_satang").eq("shift_id", activeShift.id),
-      supabase.from("refunds").select("channel, amount_satang").eq("shift_id", activeShift.id),
-      supabase.from("cash_movements").select("type, channel, amount_satang").eq("shift_id", activeShift.id),
-      supabase.from("orders").select("id, discount_satang, tax_satang").eq("shift_id", activeShift.id).not("paid_at", "is", null),
+    const [payments, refunds, movements, orders] = await Promise.all([
+      fetchAllPages((from, to) => supabase.from("payments")
+        .select("method, amount_satang").eq("shift_id", activeShift.id)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)),
+      fetchAllPages((from, to) => supabase.from("refunds")
+        .select("channel, amount_satang").eq("shift_id", activeShift.id)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)),
+      fetchAllPages((from, to) => supabase.from("cash_movements")
+        .select("type, channel, amount_satang").eq("shift_id", activeShift.id)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)),
+      fetchAllPages((from, to) => supabase.from("orders").select("id, discount_satang, tax_satang")
+        .eq("shift_id", activeShift.id).in("status", ["preparing", "completed"]).not("paid_at", "is", null)
+        .order("created_at", { ascending: true }).order("id", { ascending: true }).range(from, to)),
     ]);
-    const failure = [paymentsResult.error, refundsResult.error, movementsResult.error, ordersResult.error].find(Boolean);
-    if (failure) throw failure;
-    const payments = paymentsResult.data ?? [];
-    const refunds = refundsResult.data ?? [];
-    const movements = movementsResult.data ?? [];
-    const cashSales = sum(payments.filter((payment) => payment.method === "cash"));
-    const transferSales = sum(payments.filter((payment) => payment.method === "bank_transfer"));
-    const cashRefunds = sum(refunds.filter((refund) => refund.channel === "cash"));
-    const cashIn = sum(movements.filter((movement) => movement.type === "in" && movement.channel === "cash"));
-    const cashOut = sum(movements.filter((movement) => movement.type === "out" && movement.channel === "cash"));
-    const { expectedCash } = calculateExpectedCash({
-      openingCash: activeShift.opening_cash_satang,
-      cashSales,
-      cashRefunds,
-      cashIn,
-      cashOut,
-    });
+    const reconciliation = calculateShiftReconciliation(
+      activeShift.opening_cash_satang,
+      payments,
+      refunds,
+      movements,
+    );
 
     return withRequestId(Response.json({
       activeShift,
       preview: {
         opening_cash_satang: activeShift.opening_cash_satang,
-        cash_sales_satang: cashSales,
-        cash_refunds_satang: cashRefunds,
-        cash_in_satang: cashIn,
-        cash_out_satang: cashOut,
-        expected_cash_satang: expectedCash,
-        transfer_sales_satang: transferSales,
-        discount_satang: (ordersResult.data ?? []).reduce((total, order) => total + order.discount_satang, 0),
-        tax_satang: (ordersResult.data ?? []).reduce((total, order) => total + order.tax_satang, 0),
-        refunds_satang: sum(refunds),
-        net_sales_satang: cashSales + transferSales - sum(refunds),
-        order_count: (ordersResult.data ?? []).length,
+        cash_sales_satang: reconciliation.cashSales,
+        cash_refunds_satang: reconciliation.cashRefunds,
+        cash_in_satang: reconciliation.cashIncome,
+        cash_out_satang: reconciliation.cashExpenses,
+        expected_cash_satang: reconciliation.expectedCash,
+        transfer_sales_satang: reconciliation.transferSales,
+        bank_income_satang: reconciliation.bankIncome,
+        bank_expenses_satang: reconciliation.bankExpenses,
+        discount_satang: orders.reduce((total, order) => total + order.discount_satang, 0),
+        tax_satang: orders.reduce((total, order) => total + order.tax_satang, 0),
+        refunds_satang: reconciliation.totalRefunds,
+        net_sales_satang: reconciliation.netSales,
+        order_count: orders.length,
       },
       closings: closingsWithNames,
     }), requestId);

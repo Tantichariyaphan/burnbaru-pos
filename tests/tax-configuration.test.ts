@@ -16,6 +16,6 @@ test("a disabled zero-rate tax configuration is returned unchanged", () => {
   });
 });
 
-test("a successful tax query with no visible row follows the existing disabled-tax contract", () => {
-  assert.deepEqual(resolveTaxConfiguration(null), { enabled: false, rate_bps: 0 });
+test("a successful tax query without a configuration fails instead of silently disabling tax", () => {
+  assert.throws(() => resolveTaxConfiguration(null), /Tax configuration is missing/);
 });
