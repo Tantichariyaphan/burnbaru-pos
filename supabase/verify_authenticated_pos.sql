@@ -1,8 +1,10 @@
 -- Read-only production diagnostic for the authenticated GET /api/pos path.
 -- Run this as a database administrator in the Supabase SQL editor. It selects
 -- one active owner (falling back to another active mapped employee), evaluates
--- the exact read path as that authenticated user, and rolls everything back.
--- It never changes business data, shifts, orders, payments, or configuration.
+-- database/RLS behavior similar to that user, and rolls everything back. It
+-- never changes business data, shifts, orders, payments, or configuration.
+-- This does not prove browser cookies, token refresh, PostgREST HTTP handling,
+-- or the deployed Vercel environment.
 
 begin;
 

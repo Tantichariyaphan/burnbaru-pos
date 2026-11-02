@@ -1,5 +1,15 @@
 import { isAuthError, isAuthSessionMissingError } from "@supabase/supabase-js";
 
+const loggedErrors = new WeakSet<object>();
+
+function markLogged(error: unknown) {
+  if (typeof error === "object" && error !== null) loggedErrors.add(error);
+}
+
+function wasLogged(error: unknown) {
+  return typeof error === "object" && error !== null && loggedErrors.has(error);
+}
+
 export function isUnauthenticatedAuthError(error: unknown) {
   return isAuthSessionMissingError(error) ||
     (isAuthError(error) && (error.status === 401 || error.status === 403));
@@ -25,6 +35,7 @@ export function logRpcFailure(
   error: { code?: string; message?: string; details?: string; hint?: string },
   requestId?: string,
 ) {
+  markLogged(error);
   console.error(`[${route}] Supabase RPC ${name} failed`, {
     requestId,
     code: error.code,
@@ -40,6 +51,7 @@ export function logQueryFailure(
   error: { code?: string; message?: string; details?: string; hint?: string },
   requestId?: string,
 ) {
+  markLogged(error);
   console.error(`[${route}] Supabase query ${name} failed`, {
     requestId,
     code: error.code,
@@ -58,7 +70,7 @@ function errorMessage(error: unknown) {
   return "เกิดข้อผิดพลาดในการประมวลผลคำขอ";
 }
 
-export function apiFailure(error: unknown, route: string) {
+export function apiFailure(error: unknown, route: string, requestId?: string) {
   if (isUnauthenticatedAuthError(error)) {
     return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
   }
@@ -81,6 +93,8 @@ export function apiFailure(error: unknown, route: string) {
     typeof error.message === "string"
     ? redactDiagnostic(error.message)
     : undefined;
-  console.error(`[${route}] Unexpected request failure`, { name, code, message });
+  if (!wasLogged(error)) {
+    console.error(`[${route}] Unexpected request failure`, { requestId, name, code, message });
+  }
   return Response.json({ error: "เกิดข้อผิดพลาดภายในระบบ กรุณาลองอีกครั้ง" }, { status: 500 });
 }

@@ -1,6 +1,7 @@
 import { apiFailure, logQueryFailure, logRpcFailure, withRequestId } from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
+import { resolveTaxConfiguration } from "@/lib/tax-configuration";
 
 export const dynamic = "force-dynamic";
 
@@ -8,8 +9,8 @@ export async function GET() {
   const requestId = crypto.randomUUID();
   try {
     const { supabase, user, employee } = await getPosContext("api/pos GET", requestId);
-    if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
-    if (!isEmployee(user, employee)) return Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 });
+    if (!user) return withRequestId(Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 }), requestId);
+    if (!isEmployee(user, employee)) return withRequestId(Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 }), requestId);
 
     const [categoriesResult, productsResult, shiftResult, queueResult, taxResult] = await Promise.all([
       supabase.from("categories").select("id, name, emoji, sort_order").eq("active", true).order("sort_order"),
@@ -30,14 +31,14 @@ export async function GET() {
     for (const [name, error] of checks) {
       if (error) {
         logQueryFailure("api/pos GET", name, error, requestId);
-        return withRequestId(apiFailure(error, `api/pos GET: ${name}`), requestId);
+        return withRequestId(apiFailure(error, `api/pos GET: ${name}`, requestId), requestId);
       }
     }
-    if (!taxResult.data) throw new Error("Tax configuration is missing");
+    const taxConfiguration = resolveTaxConfiguration(taxResult.data);
     const employeesResult = await supabase.rpc("employee_directory");
     if (employeesResult.error) {
       logRpcFailure("api/pos GET", "employee_directory", employeesResult.error, requestId);
-      throw employeesResult.error;
+      return withRequestId(apiFailure(employeesResult.error, "api/pos GET: employee_directory", requestId), requestId);
     }
     const categories = (categoriesResult.data ?? []).map((category) => ({
       ...category,
@@ -48,12 +49,12 @@ export async function GET() {
       employee,
       categories,
       activeShift: shiftResult.data,
-      taxConfiguration: taxResult.data ?? { enabled: false, rate_bps: 0 },
+      taxConfiguration,
       queue: queueResult.data ?? [],
       employees: employeesResult.data ?? [],
     }), requestId);
   } catch (error) {
-    return withRequestId(apiFailure(error, "api/pos GET"), requestId);
+    return withRequestId(apiFailure(error, "api/pos GET", requestId), requestId);
   }
 }
 

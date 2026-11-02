@@ -1,4 +1,4 @@
-import { apiFailure, logRpcFailure } from "@/lib/api-errors";
+import { apiFailure, logRpcFailure, withRequestId } from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { getPosContext, isEmployee } from "@/lib/pos-server";
 import { calculateExpectedCash } from "@/lib/financial";
@@ -10,10 +10,11 @@ function sum(rows: Array<{ amount_satang: number }>) {
 }
 
 export async function GET() {
+  const requestId = crypto.randomUUID();
   try {
-    const { supabase, user, employee } = await getPosContext("api/shifts GET");
-    if (!user) return Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 });
-    if (!isEmployee(user, employee)) return Response.json({ error: "ไม่มีสิทธิ์ดูข้อมูลกะ" }, { status: 403 });
+    const { supabase, user, employee } = await getPosContext("api/shifts GET", requestId);
+    if (!user) return withRequestId(Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 }), requestId);
+    if (!isEmployee(user, employee)) return withRequestId(Response.json({ error: "ไม่มีสิทธิ์ดูข้อมูลกะ" }, { status: 403 }), requestId);
 
     const [{ data: activeShift, error: shiftError }, { data: closings, error: closingError }] = await Promise.all([
       supabase.from("shifts").select("id, register_id, opening_cash_satang, opened_at, opened_by")
@@ -25,7 +26,7 @@ export async function GET() {
     if (closingError) throw closingError;
     const { data: directory, error: directoryError } = await supabase.rpc("employee_directory");
     if (directoryError) {
-      logRpcFailure("api/shifts GET", "employee_directory", directoryError);
+      logRpcFailure("api/shifts GET", "employee_directory", directoryError, requestId);
       throw directoryError;
     }
     const employeeNames = new Map<string, string>((directory ?? []).map((person: { id: string; name: string }) => [person.id, person.name]));
@@ -33,7 +34,7 @@ export async function GET() {
       ...closing,
       employee: { name: employeeNames.get(String(closing.closed_by)) ?? "—" },
     }));
-    if (!activeShift) return Response.json({ activeShift: null, preview: null, closings: closingsWithNames });
+    if (!activeShift) return withRequestId(Response.json({ activeShift: null, preview: null, closings: closingsWithNames }), requestId);
 
     const [paymentsResult, refundsResult, movementsResult, ordersResult] = await Promise.all([
       supabase.from("payments").select("method, amount_satang").eq("shift_id", activeShift.id),
@@ -59,7 +60,7 @@ export async function GET() {
       cashOut,
     });
 
-    return Response.json({
+    return withRequestId(Response.json({
       activeShift,
       preview: {
         opening_cash_satang: activeShift.opening_cash_satang,
@@ -76,8 +77,8 @@ export async function GET() {
         order_count: (ordersResult.data ?? []).length,
       },
       closings: closingsWithNames,
-    });
+    }), requestId);
   } catch (error) {
-    return apiFailure(error, "api/shifts GET");
+    return withRequestId(apiFailure(error, "api/shifts GET", requestId), requestId);
   }
 }
