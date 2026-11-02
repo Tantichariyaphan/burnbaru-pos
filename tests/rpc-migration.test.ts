@@ -9,6 +9,9 @@ const authenticatedPosVerificationPath = new URL("../supabase/verify_authenticat
 const categoryManagementMigrationPath = new URL("../supabase/migrations/0007_category_management.sql", import.meta.url);
 const catalogManagementMigrationPath = new URL("../supabase/migrations/0008_catalog_management.sql", import.meta.url);
 const financialIntegrityMigrationPath = new URL("../supabase/migrations/0009_pos_financial_integrity.sql", import.meta.url);
+const taxPolicyMigrationPath = new URL("../supabase/migrations/0010_pos_tax_configuration_policy.sql", import.meta.url);
+const taxDiagnosticPath = new URL("../supabase/diagnose_tax_configuration.sql", import.meta.url);
+const posRoutePath = new URL("../app/api/pos/route.ts", import.meta.url);
 const reportsRoutePath = new URL("../app/api/reports/route.ts", import.meta.url);
 
 test("employee RPC repair migration restores the data-backed authenticated functions", async () => {
@@ -67,6 +70,8 @@ test("authenticated POS verification keeps the production read-path probes read-
   assert.match(verification, /query\.shifts/i);
   assert.match(verification, /query\.orders_queue_with_order_items/i);
   assert.match(verification, /query\.tax_configuration/i);
+  assert.match(verification, /rpc\.pos_tax_configuration/i);
+  assert.match(verification, /set local role authenticated/i);
   assert.match(verification, /rpc\.employee_directory/i);
   assert.match(verification, /metadata\.orders_to_order_items_fk/i);
   assert.match(verification, /rollback;\s*$/i);
@@ -106,6 +111,39 @@ test("financial integrity migration requires tax configuration and records the a
   assert.match(migration, /revoke all on function public\.refund_order\(uuid, integer, text\) from public, anon, authenticated/i);
   assert.match(migration, /grant execute on function public\.refund_order\(uuid, integer, public\.pay_channel, text\) to authenticated/i);
   assert.match(migration, /alter function public\.close_shift\(uuid, integer, text\)\s*set search_path = pg_catalog, public, pg_temp/i);
+});
+
+test("tax policy uses one employee-authorized read and disabled fallback across GET and order RPCs", async () => {
+  const migration = await readFile(taxPolicyMigrationPath, "utf8");
+  const route = await readFile(posRoutePath, "utf8");
+  assert.match(migration, /create or replace function public\.pos_tax_configuration\(p_lock boolean default false\)/i);
+  assert.match(migration, /security definer\s+set search_path = pg_catalog, public, pg_temp/i);
+  assert.match(migration, /perform public\.assert_active_employee\(\)/i);
+  assert.match(migration, /if p_lock then[\s\S]*?for share/i);
+  assert.match(migration, /return query select false, 0, true/i);
+  assert.match(migration, /revoke all on function public\.pos_tax_configuration\(boolean\) from public, anon, authenticated/i);
+  assert.match(migration, /grant execute on function public\.pos_tax_configuration\(boolean\) to authenticated/i);
+  assert.equal((migration.match(/from public\.pos_tax_configuration\(true\)/gi) ?? []).length, 2);
+  assert.doesNotMatch(migration, /raise exception 'Tax configuration is missing'/i);
+  assert.match(route, /supabase\.rpc\("pos_tax_configuration", \{ p_lock: false \}\)/i);
+  assert.match(route, /if \(!user\)[\s\S]*?status: 401/i);
+  assert.match(route, /if \(!isEmployee\(user, employee\)\)[\s\S]*?status: 403/i);
+  assert.match(route, /taxConfiguration,\s*queue:/i);
+  assert.match(route, /return withRequestId\(Response\.json\(\{[\s\S]*?taxConfiguration,[\s\S]*?\}\), requestId\)/i);
+  assert.match(route, /input\.action === "saveOrder"[\s\S]*?supabase\.rpc\(rpcName, rpcArgs\)/i);
+  assert.doesNotMatch(migration, /\b(?:insert|update|delete|truncate)\s+into\s+public\.tax_configuration/i);
+});
+
+test("tax diagnostic SQL reads policies, grants, schema, rows, and RPCs without changing production data", async () => {
+  const diagnostic = await readFile(taxDiagnosticPath, "utf8");
+  assert.match(diagnostic, /information_schema\.columns/i);
+  assert.match(diagnostic, /pg_constraint/i);
+  assert.match(diagnostic, /from public\.tax_configuration/i);
+  assert.match(diagnostic, /pg_policies/i);
+  assert.match(diagnostic, /has_table_privilege/i);
+  assert.match(diagnostic, /pos_tax_configuration/i);
+  assert.match(diagnostic, /pg_get_functiondef/i);
+  assert.doesNotMatch(diagnostic, /\b(?:insert|update|delete|truncate)\s+into\s+public\./i);
 });
 
 test("reports use paid transactions and return date-bounded cash history and shift reconciliations", async () => {

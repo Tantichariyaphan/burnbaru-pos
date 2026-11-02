@@ -51,6 +51,7 @@ set local role authenticated;
 do $$
 declare
   v_count bigint;
+  v_fallback boolean;
 begin
   begin
     select count(*) into v_count from public.current_employee_profile();
@@ -111,13 +112,30 @@ begin
     select count(*) into v_count from public.tax_configuration where singleton = true;
     insert into pg_temp.pos_probe_results values (
       'query.tax_configuration',
-      case when v_count = 1 then 'ok' else 'failed' end,
+      case when v_count = 1 then 'ok' when v_count = 0 then 'no_visible_row' else 'failed' end,
       null,
       case when v_count = 1 then 'one singleton tax configuration returned'
-           else format('expected one singleton tax configuration, received %s', v_count) end
+           when v_count = 0 then 'authenticated direct SELECT sees no row; inspect policy and app RPC result'
+           else format('expected at most one singleton tax configuration, received %s', v_count) end
     );
   exception when others then
     insert into pg_temp.pos_probe_results values ('query.tax_configuration', 'failed', sqlstate, sqlerrm);
+  end;
+
+  begin
+    select count(*), coalesce(bool_or(fallback_applied), false)
+    into v_count, v_fallback
+    from public.pos_tax_configuration(false);
+    insert into pg_temp.pos_probe_results values (
+      'rpc.pos_tax_configuration',
+      case when v_count = 1 then 'ok' else 'failed' end,
+      null,
+      case when v_count <> 1 then format('expected one result, received %s', v_count)
+           when v_fallback then 'authorized RPC returned the disabled, zero-rate missing-row fallback'
+           else 'authorized RPC returned the persisted singleton configuration' end
+    );
+  exception when others then
+    insert into pg_temp.pos_probe_results values ('rpc.pos_tax_configuration', 'failed', sqlstate, sqlerrm);
   end;
 
   begin
@@ -163,7 +181,10 @@ select
   ) then 'ok' else 'failed' end as status;
 
 with expected_rpc(signature) as (
-  values ('public.current_employee_profile()'), ('public.employee_directory()')
+  values
+    ('public.current_employee_profile()'),
+    ('public.employee_directory()'),
+    ('public.pos_tax_configuration(boolean)')
 )
 select
   e.signature,

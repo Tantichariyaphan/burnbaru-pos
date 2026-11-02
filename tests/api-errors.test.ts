@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuthApiError, AuthSessionMissingError } from "@supabase/supabase-js";
-import { apiFailure, logQueryFailure, logRpcFailure, withRequestId } from "../lib/api-errors.ts";
+import {
+  apiFailure,
+  logQueryFailure,
+  logRpcFailure,
+  logTaxConfigurationRead,
+  logTaxConfigurationVisibility,
+  withRequestId,
+} from "../lib/api-errors.ts";
 
 test("request IDs are returned in headers without changing the safe error body", async () => {
   const response = withRequestId(apiFailure(new Error("internal failure"), "test"), "request-123");
@@ -82,11 +89,13 @@ test("RPC diagnostics identify the route and RPC without logging credentials", (
       message: "Bearer example-token user@example.com",
       details: "JWT eyJhbGci.eyJzdWI.abc sb_secret_example",
       hint: "refresh schema",
-    }, "request-123");
+    }, "request-123", "schema_or_table_error", "project.supabase.co");
     assert.equal(logArgs[0], "[api/pos GET] Supabase RPC current_employee_profile failed");
     const diagnostics = logArgs[1] as Record<string, string>;
     assert.equal(diagnostics.requestId, "request-123");
     assert.equal(diagnostics.code, "PGRST202");
+    assert.equal(diagnostics.diagnosticCategory, "schema_or_table_error");
+    assert.equal(diagnostics.projectHost, "project.supabase.co");
     assert.match(diagnostics.message, /Bearer \[REDACTED\] \[REDACTED EMAIL\]/);
     assert.doesNotMatch(JSON.stringify(diagnostics), /example-token|user@example.com|sb_secret_example|eyJhbGci/);
   } finally {
@@ -112,5 +121,43 @@ test("query diagnostics identify the failing query and redact sensitive values",
     assert.doesNotMatch(JSON.stringify(diagnostics), /user@example\.com|eyJhbGci/);
   } finally {
     console.error = originalError;
+  }
+});
+
+test("tax fallback diagnostics contain only the outcome, correlation ID, and project hostname", () => {
+  const originalWarn = console.warn;
+  let logArgs: unknown[] = [];
+  console.warn = (...args: unknown[]) => { logArgs = args; };
+  try {
+    logTaxConfigurationRead("no_row_safe_fallback", "request-123", "project.supabase.co");
+    assert.equal(logArgs[0], "[api/pos GET] Tax configuration read");
+    assert.deepEqual(logArgs[1], {
+      requestId: "request-123",
+      status: "no_row_safe_fallback",
+      projectHost: "project.supabase.co",
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+});
+
+test("authenticated direct SELECT diagnostics distinguish a row not visible to the request JWT", () => {
+  const originalWarn = console.warn;
+  let logArgs: unknown[] = [];
+  console.warn = (...args: unknown[]) => { logArgs = args; };
+  try {
+    logTaxConfigurationVisibility(
+      "authenticated_direct_select_no_visible_row",
+      "request-456",
+      "project.supabase.co",
+    );
+    assert.equal(logArgs[0], "[api/pos GET] Authenticated tax table visibility");
+    assert.deepEqual(logArgs[1], {
+      requestId: "request-456",
+      status: "authenticated_direct_select_no_visible_row",
+      projectHost: "project.supabase.co",
+    });
+  } finally {
+    console.warn = originalWarn;
   }
 });

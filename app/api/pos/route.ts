@@ -1,8 +1,19 @@
-import { apiFailure, logQueryFailure, logRpcFailure, withRequestId } from "@/lib/api-errors";
+import {
+  apiFailure,
+  logQueryFailure,
+  logRpcFailure,
+  logTaxConfigurationRead,
+  logTaxConfigurationVisibility,
+  withRequestId,
+} from "@/lib/api-errors";
 import { POS_REGISTER_ID } from "@/lib/pos-constants";
 import { buildPosCatalog } from "@/lib/pos-catalog";
 import { getPosContext, isEmployee, validSatang, validUuid } from "@/lib/pos-server";
-import { resolveTaxConfiguration } from "@/lib/tax-configuration";
+import {
+  getSupabaseProjectHost,
+  resolveTaxConfigurationRpcResult,
+  taxConfigurationErrorCategory,
+} from "@/lib/tax-configuration";
 
 export const dynamic = "force-dynamic";
 
@@ -13,13 +24,22 @@ export async function GET() {
     if (!user) return withRequestId(Response.json({ error: "กรุณาเข้าสู่ระบบ" }, { status: 401 }), requestId);
     if (!isEmployee(user, employee)) return withRequestId(Response.json({ error: "บัญชีนี้ยังไม่มีโปรไฟล์พนักงานที่เปิดใช้งาน" }, { status: 403 }), requestId);
 
-    const [categoriesResult, productsResult, shiftResult, queueResult, taxResult] = await Promise.all([
+    const taxConfigurationRequest = Promise.resolve()
+      .then(() => supabase.rpc("pos_tax_configuration", { p_lock: false }))
+      .catch((error: unknown) => ({ data: null, error }));
+    const taxVisibilityRequest = process.env.POS_TAX_RLS_DIAGNOSTICS === "true"
+      ? Promise.resolve()
+        .then(() => supabase.from("tax_configuration").select("enabled, rate_bps").eq("singleton", true).maybeSingle())
+        .catch((error: unknown) => ({ data: null, error }))
+      : Promise.resolve(null);
+    const [categoriesResult, productsResult, shiftResult, queueResult, taxResult, taxVisibilityResult] = await Promise.all([
       supabase.from("categories").select("id, name, emoji, sort_order, active").order("sort_order"),
       supabase.from("products").select("id, name, emoji, category_id, price_satang, available, sort_order, active").order("sort_order"),
       supabase.from("shifts").select("id, register_id, opening_cash_satang, opened_at, opened_by").eq("register_id", POS_REGISTER_ID).eq("status", "open").maybeSingle(),
       supabase.from("orders").select("id, order_no, total_satang, status, paid_at, created_at, payment_method, order_items(id, name_snapshot, emoji_snapshot, unit_price_satang, quantity, line_total_satang)")
         .eq("status", "preparing").order("paid_at", { ascending: true }).limit(60),
-      supabase.from("tax_configuration").select("enabled, rate_bps").eq("singleton", true).maybeSingle(),
+      taxConfigurationRequest,
+      taxVisibilityRequest,
     ]);
 
     const checks = [
@@ -27,7 +47,6 @@ export async function GET() {
       ["products", productsResult.error],
       ["shifts", shiftResult.error],
       ["orders_queue", queueResult.error],
-      ["tax_configuration", taxResult.error],
     ] as const;
     for (const [name, error] of checks) {
       if (error) {
@@ -35,7 +54,42 @@ export async function GET() {
         return withRequestId(apiFailure(error, `api/pos GET: ${name}`, requestId), requestId);
       }
     }
-    const taxConfiguration = resolveTaxConfiguration(taxResult.data);
+    if (taxVisibilityResult) {
+      if (taxVisibilityResult.error) {
+        logQueryFailure(
+          "api/pos GET",
+          "tax_configuration authenticated direct SELECT",
+          taxVisibilityResult.error,
+          requestId,
+          taxConfigurationErrorCategory(taxVisibilityResult.error),
+          getSupabaseProjectHost(),
+        );
+      } else {
+        logTaxConfigurationVisibility(
+          taxVisibilityResult.data ? "authenticated_direct_select_row_returned" : "authenticated_direct_select_no_visible_row",
+          requestId,
+          getSupabaseProjectHost(),
+        );
+      }
+    }
+    if (taxResult.error) {
+      logRpcFailure(
+        "api/pos GET",
+        "pos_tax_configuration",
+        taxResult.error,
+        requestId,
+        taxConfigurationErrorCategory(taxResult.error),
+        getSupabaseProjectHost(),
+      );
+      return withRequestId(apiFailure(taxResult.error, "api/pos GET: pos_tax_configuration", requestId), requestId);
+    }
+    const taxResultData = resolveTaxConfigurationRpcResult(taxResult.data, taxResult.error);
+    logTaxConfigurationRead(
+      taxResultData.fallbackApplied ? "no_row_safe_fallback" : "row_returned",
+      requestId,
+      getSupabaseProjectHost(),
+    );
+    const taxConfiguration = taxResultData.configuration;
     const employeesResult = await supabase.rpc("employee_directory");
     if (employeesResult.error) {
       logRpcFailure("api/pos GET", "employee_directory", employeesResult.error, requestId);

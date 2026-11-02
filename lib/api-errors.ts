@@ -32,32 +32,64 @@ function redactDiagnostic(value: string | undefined) {
 export function logRpcFailure(
   route: string,
   name: string,
-  error: { code?: string; message?: string; details?: string; hint?: string },
+  error: unknown,
   requestId?: string,
+  diagnosticCategory?: string,
+  projectHost?: string,
 ) {
   markLogged(error);
   console.error(`[${route}] Supabase RPC ${name} failed`, {
     requestId,
-    code: error.code,
-    message: redactDiagnostic(error.message),
-    details: redactDiagnostic(error.details),
-    hint: redactDiagnostic(error.hint),
+    diagnosticCategory,
+    projectHost,
+    code: diagnosticField(error, "code"),
+    message: redactDiagnostic(diagnosticField(error, "message")),
+    details: redactDiagnostic(diagnosticField(error, "details")),
+    hint: redactDiagnostic(diagnosticField(error, "hint")),
   });
+}
+
+export function logTaxConfigurationRead(
+  status: "row_returned" | "no_row_safe_fallback",
+  requestId: string,
+  projectHost: string,
+) {
+  const log = status === "row_returned" ? console.info : console.warn;
+  log("[api/pos GET] Tax configuration read", { requestId, status, projectHost });
+}
+
+export function logTaxConfigurationVisibility(
+  status: "authenticated_direct_select_row_returned" | "authenticated_direct_select_no_visible_row",
+  requestId: string,
+  projectHost: string,
+) {
+  const log = status.endsWith("no_visible_row") ? console.warn : console.info;
+  log("[api/pos GET] Authenticated tax table visibility", { requestId, status, projectHost });
+}
+
+function diagnosticField(error: unknown, key: string) {
+  if (typeof error !== "object" || error === null || !(key in error)) return undefined;
+  const value = error[key as keyof typeof error];
+  return typeof value === "string" ? value : undefined;
 }
 
 export function logQueryFailure(
   route: string,
   name: string,
-  error: { code?: string; message?: string; details?: string; hint?: string },
+  error: unknown,
   requestId?: string,
+  diagnosticCategory?: string,
+  projectHost?: string,
 ) {
   markLogged(error);
   console.error(`[${route}] Supabase query ${name} failed`, {
     requestId,
-    code: error.code,
-    message: redactDiagnostic(error.message),
-    details: redactDiagnostic(error.details),
-    hint: redactDiagnostic(error.hint),
+    diagnosticCategory,
+    projectHost,
+    code: diagnosticField(error, "code"),
+    message: redactDiagnostic(diagnosticField(error, "message")),
+    details: redactDiagnostic(diagnosticField(error, "details")),
+    hint: redactDiagnostic(diagnosticField(error, "hint")),
   });
 }
 
